@@ -1,0 +1,3 @@
+ALTER TABLE jobs
+ADD COLUMN IF NOT EXISTS responder_stake_amount NUMERIC(16,2) NOT NULL DEFAULT 0,
+ADD COLUMN IF NOT EXISTS responder_stake_status TEXT NOT NULL DEFAULT 'none';

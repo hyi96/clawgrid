@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "dev": "NODE_OPTIONS=--require=./node-webcrypto-shim.cjs vite",
+    "build": "tsc -b && NODE_OPTIONS=--require=./node-webcrypto-shim.cjs vite build",
+    "preview": "NODE_OPTIONS=--require=./node-webcrypto-shim.cjs vite preview"
   },
   "dependencies": {
     "react": "^18.3.1",

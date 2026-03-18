@@ -1,0 +1,1793 @@
+package httpapi
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
+	"net/http"
+	"net/http/cookiejar"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"clawgrid/internal/app"
+	"clawgrid/internal/config"
+	"clawgrid/internal/db"
+	"clawgrid/internal/domain"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+type integrationHarness struct {
+	app       *Server
+	server    *httptest.Server
+	adminPool *pgxpool.Pool
+	appPool   *pgxpool.Pool
+	baseURL   string
+	schema    string
+}
+
+const testAccountRegisterPath = "/_private/clawgrid-signup/accounts/register"
+
+func TestResponderWorkReturnsEligibleSystemPoolCandidate(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "hello from tom")
+
+	var work struct {
+		Mode       string `json:"mode"`
+		Candidates []struct {
+			ID string `json:"id"`
+		} `json:"candidates"`
+	}
+	h.requestJSON(t, http.MethodGet, "/responders/work", responder.apiKey, nil, http.StatusOK, &work)
+
+	if work.Mode != "pool" {
+		t.Fatalf("mode = %q, want %q", work.Mode, "pool")
+	}
+	if len(work.Candidates) != 1 {
+		t.Fatalf("candidate count = %d, want 1", len(work.Candidates))
+	}
+	if work.Candidates[0].ID != jobID {
+		t.Fatalf("candidate id = %q, want %q", work.Candidates[0].ID, jobID)
+	}
+}
+
+func TestRoutingJobAndSessionContentAreNotPublicToOtherAccounts(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	prompter := h.registerAccount(t, "tom")
+	other := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "private routing content")
+
+	h.requestJSON(t, http.MethodGet, "/jobs/"+jobID, other.apiKey, nil, http.StatusForbidden, nil)
+	h.requestJSON(t, http.MethodGet, "/sessions/"+sessionID+"/messages", other.apiKey, nil, http.StatusForbidden, nil)
+}
+
+func TestResponderWorkLongPollsBeforeReturningPoolCandidates(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.PollAssignmentWait = 200 * time.Millisecond
+	})
+
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "hello after wait")
+
+	start := time.Now()
+	var work struct {
+		Mode       string `json:"mode"`
+		Candidates []struct {
+			ID string `json:"id"`
+		} `json:"candidates"`
+	}
+	h.requestJSON(t, http.MethodGet, "/responders/work", responder.apiKey, nil, http.StatusOK, &work)
+	elapsed := time.Since(start)
+
+	if elapsed < 180*time.Millisecond {
+		t.Fatalf("responders/work returned too quickly: %v", elapsed)
+	}
+	if work.Mode != "pool" {
+		t.Fatalf("mode = %q, want %q", work.Mode, "pool")
+	}
+	if len(work.Candidates) != 1 {
+		t.Fatalf("candidate count = %d, want 1", len(work.Candidates))
+	}
+	if work.Candidates[0].ID != jobID {
+		t.Fatalf("candidate id = %q, want %q", work.Candidates[0].ID, jobID)
+	}
+}
+
+func TestResponderStateReportsExternalPolling(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.PollAssignmentWait = 300 * time.Millisecond
+	})
+
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	_ = h.postMessage(t, prompter.apiKey, sessionID, "hello after wait")
+
+	client := &http.Client{}
+	done := make(chan error, 1)
+	go func() {
+		req, err := http.NewRequest(http.MethodGet, h.baseURL+"/responders/work", nil)
+		if err != nil {
+			done <- err
+			return
+		}
+		req.Header.Set("Authorization", "Bearer "+responder.apiKey)
+		resp, err := client.Do(req)
+		if err != nil {
+			done <- err
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			done <- fmt.Errorf("responders/work status = %d", resp.StatusCode)
+			return
+		}
+		done <- nil
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+
+	var state struct {
+		Mode             string `json:"mode"`
+		RemainingSeconds int    `json:"remaining_seconds"`
+	}
+	h.requestJSON(t, http.MethodGet, "/responders/state", responder.apiKey, nil, http.StatusOK, &state)
+	if state.Mode != "polling" {
+		t.Fatalf("mode = %q, want %q", state.Mode, "polling")
+	}
+	if state.RemainingSeconds < 0 {
+		t.Fatalf("remaining_seconds = %d, want >= 0", state.RemainingSeconds)
+	}
+
+	if err := <-done; err != nil {
+		t.Fatalf("long poll request failed: %v", err)
+	}
+}
+
+func TestResponderStateReturnsExternalPoolSnapshot(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.PollAssignmentWait = 200 * time.Millisecond
+		cfg.PoolDwellWindow = 5 * time.Second
+	})
+
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "hello after wait")
+
+	var work struct {
+		Mode       string `json:"mode"`
+		Candidates []struct {
+			ID string `json:"id"`
+		} `json:"candidates"`
+	}
+	h.requestJSON(t, http.MethodGet, "/responders/work", responder.apiKey, nil, http.StatusOK, &work)
+	if work.Mode != "pool" {
+		t.Fatalf("work mode = %q, want %q", work.Mode, "pool")
+	}
+	if len(work.Candidates) != 1 || work.Candidates[0].ID != jobID {
+		t.Fatalf("unexpected work candidates: %+v", work.Candidates)
+	}
+
+	time.Sleep(25 * time.Millisecond)
+
+	var state struct {
+		Mode       string `json:"mode"`
+		Candidates []struct {
+			ID string `json:"id"`
+		} `json:"candidates"`
+	}
+	h.requestJSON(t, http.MethodGet, "/responders/state", responder.apiKey, nil, http.StatusOK, &state)
+	if state.Mode != "pool" {
+		t.Fatalf("state mode = %q, want %q", state.Mode, "pool")
+	}
+	if len(state.Candidates) != 1 || state.Candidates[0].ID != jobID {
+		t.Fatalf("unexpected state candidates: %+v", state.Candidates)
+	}
+}
+
+func TestResponderStatePrefersPoolSnapshotOverStalePollingRow(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.PoolDwellWindow = 5 * time.Second
+		cfg.PollAssignmentWait = 30 * time.Second
+	})
+
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "hello after wait")
+
+	h.execSQL(t, `
+INSERT INTO responder_availability(id, owner_type, owner_id, last_seen_at, poll_started_at)
+VALUES ($1, 'account', $2, now(), now())`,
+		domain.NewID("av"), responder.accountID)
+
+	h.requestJSON(t, http.MethodGet, "/responders/work", responder.apiKey, nil, http.StatusOK, nil)
+
+	var state struct {
+		Mode       string `json:"mode"`
+		Candidates []struct {
+			ID string `json:"id"`
+		} `json:"candidates"`
+	}
+	h.requestJSON(t, http.MethodGet, "/responders/state", responder.apiKey, nil, http.StatusOK, &state)
+	if state.Mode != "pool" {
+		t.Fatalf("state mode = %q, want %q", state.Mode, "pool")
+	}
+	if len(state.Candidates) != 1 || state.Candidates[0].ID != jobID {
+		t.Fatalf("unexpected state candidates: %+v", state.Candidates)
+	}
+}
+
+func TestJobClaimReturnsJobPayload(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "hello from tom")
+
+	var claim struct {
+		OK               bool    `json:"ok"`
+		JobID            string  `json:"job_id"`
+		ID               string  `json:"id"`
+		Status           string  `json:"status"`
+		TipAmount        float64 `json:"tip_amount"`
+		TimeLimitMinutes int     `json:"time_limit_minutes"`
+		SessionID        string  `json:"session_id"`
+		RequestMessageID string  `json:"request_message_id"`
+		ClaimOwnerType   string  `json:"claim_owner_type"`
+		ClaimOwnerID     string  `json:"claim_owner_id"`
+		WorkDeadlineAt   string  `json:"work_deadline_at"`
+	}
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/claim", responder.apiKey, nil, http.StatusOK, &claim)
+
+	if !claim.OK {
+		t.Fatal("claim ok = false, want true")
+	}
+	if claim.JobID != jobID || claim.ID != jobID {
+		t.Fatalf("unexpected claim ids: %+v", claim)
+	}
+	if claim.SessionID != sessionID {
+		t.Fatalf("session_id = %q, want %q", claim.SessionID, sessionID)
+	}
+	if claim.Status != "system_pool" {
+		t.Fatalf("status = %q, want %q", claim.Status, "system_pool")
+	}
+	if claim.ClaimOwnerType != "account" || claim.ClaimOwnerID != responder.accountID {
+		t.Fatalf("unexpected claim owner: %+v", claim)
+	}
+	if claim.RequestMessageID == "" || claim.WorkDeadlineAt == "" {
+		t.Fatalf("claim response missing job payload fields: %+v", claim)
+	}
+}
+
+func TestMessageCreateRejectsTimeLimitBelowOneMinute(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	prompter := h.registerAccount(t, "tom")
+	sessionID := h.createSession(t, prompter.apiKey)
+
+	h.requestJSON(t, http.MethodPost, "/sessions/"+sessionID+"/messages", prompter.apiKey, map[string]any{
+		"content":            "hello from tom",
+		"time_limit_minutes": 0,
+	}, http.StatusBadRequest, nil)
+}
+
+func TestRepeatedClaimBySameResponderIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "hello from tom")
+
+	startBalance := h.walletBalance(t, responder.apiKey)
+
+	var first struct {
+		JobID          string `json:"job_id"`
+		ClaimExpiresAt string `json:"claim_expires_at"`
+		ClaimOwnerID   string `json:"claim_owner_id"`
+	}
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/claim", responder.apiKey, nil, http.StatusOK, &first)
+
+	afterFirstBalance := h.walletBalance(t, responder.apiKey)
+	if afterFirstBalance != startBalance-0.6 {
+		t.Fatalf("balance after first claim = %v, want %v", afterFirstBalance, startBalance-0.6)
+	}
+
+	var second struct {
+		JobID          string `json:"job_id"`
+		ClaimExpiresAt string `json:"claim_expires_at"`
+		ClaimOwnerID   string `json:"claim_owner_id"`
+	}
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/claim", responder.apiKey, nil, http.StatusOK, &second)
+
+	afterSecondBalance := h.walletBalance(t, responder.apiKey)
+	if afterSecondBalance != afterFirstBalance {
+		t.Fatalf("balance after second claim = %v, want unchanged %v", afterSecondBalance, afterFirstBalance)
+	}
+	if second.JobID != first.JobID {
+		t.Fatalf("second job_id = %q, want %q", second.JobID, first.JobID)
+	}
+	if second.ClaimOwnerID != responder.accountID {
+		t.Fatalf("second claim_owner_id = %q, want %q", second.ClaimOwnerID, responder.accountID)
+	}
+	if second.ClaimExpiresAt != first.ClaimExpiresAt {
+		t.Fatalf("claim_expires_at changed on repeated claim: first=%q second=%q", first.ClaimExpiresAt, second.ClaimExpiresAt)
+	}
+
+	holdCount := h.scalarInt(t, `
+SELECT COUNT(*)::int
+FROM wallet_ledger
+WHERE owner_type = 'account'
+  AND owner_id = $1
+  AND job_id = $2
+  AND reason = 'responder_stake_hold'`,
+		responder.accountID, jobID)
+	if holdCount != 1 {
+		t.Fatalf("stake hold ledger count = %d, want 1", holdCount)
+	}
+}
+
+func TestResponderWorkRejectsSecondConcurrentPollForSameAccount(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.PollAssignmentWait = 300 * time.Millisecond
+	})
+
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	_ = h.postMessage(t, prompter.apiKey, sessionID, "hello after wait")
+
+	client := &http.Client{}
+	done := make(chan error, 1)
+	go func() {
+		req, err := http.NewRequest(http.MethodGet, h.baseURL+"/responders/work", nil)
+		if err != nil {
+			done <- err
+			return
+		}
+		req.Header.Set("Authorization", "Bearer "+responder.apiKey)
+		resp, err := client.Do(req)
+		if err != nil {
+			done <- err
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			done <- fmt.Errorf("first responders/work status = %d", resp.StatusCode)
+			return
+		}
+		done <- nil
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	h.requestJSON(t, http.MethodGet, "/responders/work", responder.apiKey, nil, http.StatusConflict, nil)
+
+	if err := <-done; err != nil {
+		t.Fatalf("first long poll request failed: %v", err)
+	}
+}
+
+func TestJobClaimRejectsResponderWithOtherActiveWork(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	dispatcher := h.registerAccount(t, "dispatch")
+	responder := h.registerAccount(t, "noah")
+	prompterA := h.registerAccount(t, "tom")
+	prompterB := h.registerAccount(t, "jerry")
+
+	sessionA := h.createSession(t, prompterA.apiKey)
+	jobAssigned := h.postMessage(t, prompterA.apiKey, sessionA, "assigned job")
+	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
+		"job_id":               jobAssigned,
+		"responder_owner_type": "account",
+		"responder_owner_id":   responder.accountID,
+	}, http.StatusCreated, nil)
+
+	sessionB := h.createSession(t, prompterB.apiKey)
+	jobPool := h.postMessage(t, prompterB.apiKey, sessionB, "pool job")
+	h.execSQL(t, `UPDATE jobs SET status = 'system_pool', last_system_pool_entered_at = now() WHERE id = $1`, jobPool)
+
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobPool+"/claim", responder.apiKey, nil, http.StatusConflict, nil)
+}
+
+func TestJobClaimRejectsSecondClaimForSameResponder(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	responder := h.registerAccount(t, "noah")
+	prompterA := h.registerAccount(t, "tom")
+	prompterB := h.registerAccount(t, "jerry")
+
+	sessionA := h.createSession(t, prompterA.apiKey)
+	jobA := h.postMessage(t, prompterA.apiKey, sessionA, "pool job a")
+	h.execSQL(t, `UPDATE jobs SET status = 'system_pool', last_system_pool_entered_at = now() WHERE id = $1`, jobA)
+
+	sessionB := h.createSession(t, prompterB.apiKey)
+	jobB := h.postMessage(t, prompterB.apiKey, sessionB, "pool job b")
+	h.execSQL(t, `UPDATE jobs SET status = 'system_pool', last_system_pool_entered_at = now() WHERE id = $1`, jobB)
+
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobA+"/claim", responder.apiKey, nil, http.StatusOK, nil)
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobB+"/claim", responder.apiKey, nil, http.StatusConflict, nil)
+}
+
+func TestPrompterCannotSendNewMessageWhileFeedbackIsPending(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "first prompt")
+
+	h.requestJSON(t, http.MethodPost, "/assignments", prompter.apiKey, map[string]any{
+		"job_id":               jobID,
+		"responder_owner_type": "account",
+		"responder_owner_id":   responder.accountID,
+	}, http.StatusCreated, nil)
+
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/reply", responder.apiKey, map[string]any{
+		"content": "first reply",
+	}, http.StatusOK, nil)
+
+	var job struct {
+		Status string `json:"status"`
+	}
+	h.requestJSON(t, http.MethodGet, "/jobs/"+jobID, prompter.apiKey, nil, http.StatusOK, &job)
+	if job.Status != "review_pending" {
+		t.Fatalf("job status = %q, want %q", job.Status, "review_pending")
+	}
+
+	h.requestJSON(t, http.MethodPost, "/sessions/"+sessionID+"/messages", prompter.apiKey, map[string]any{
+		"content": "second prompt should be blocked",
+	}, http.StatusConflict, nil)
+}
+
+func TestSessionStateTracksPromptToFeedbackCycle(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+
+	var initial struct {
+		State     string `json:"state"`
+		ActiveJob any    `json:"active_job"`
+	}
+	h.requestJSON(t, http.MethodGet, "/sessions/"+sessionID+"/state", prompter.apiKey, nil, http.StatusOK, &initial)
+	if initial.State != "ready_for_prompt" {
+		t.Fatalf("initial state = %q, want %q", initial.State, "ready_for_prompt")
+	}
+	if initial.ActiveJob != nil {
+		t.Fatalf("initial active_job = %#v, want nil", initial.ActiveJob)
+	}
+
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "first prompt")
+
+	var waiting struct {
+		State     string `json:"state"`
+		ActiveJob struct {
+			ID string `json:"id"`
+		} `json:"active_job"`
+	}
+	h.requestJSON(t, http.MethodGet, "/sessions/"+sessionID+"/state", prompter.apiKey, nil, http.StatusOK, &waiting)
+	if waiting.State != "waiting_for_responder" {
+		t.Fatalf("waiting state = %q, want %q", waiting.State, "waiting_for_responder")
+	}
+	if waiting.ActiveJob.ID != jobID {
+		t.Fatalf("waiting active job = %q, want %q", waiting.ActiveJob.ID, jobID)
+	}
+
+	h.requestJSON(t, http.MethodPost, "/assignments", prompter.apiKey, map[string]any{
+		"job_id":               jobID,
+		"responder_owner_type": "account",
+		"responder_owner_id":   responder.accountID,
+	}, http.StatusCreated, nil)
+
+	var working struct {
+		State     string `json:"state"`
+		ActiveJob struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"active_job"`
+	}
+	h.requestJSON(t, http.MethodGet, "/sessions/"+sessionID+"/state", prompter.apiKey, nil, http.StatusOK, &working)
+	if working.State != "responder_working" {
+		t.Fatalf("working state = %q, want %q", working.State, "responder_working")
+	}
+	if working.ActiveJob.ID != jobID || working.ActiveJob.Status != "assigned" {
+		t.Fatalf("unexpected working payload: %+v", working.ActiveJob)
+	}
+
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/reply", responder.apiKey, map[string]any{
+		"content": "first reply",
+	}, http.StatusOK, nil)
+
+	var feedback struct {
+		State     string `json:"state"`
+		CanVote   bool   `json:"can_vote"`
+		ActiveJob struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"active_job"`
+	}
+	h.requestJSON(t, http.MethodGet, "/sessions/"+sessionID+"/state", prompter.apiKey, nil, http.StatusOK, &feedback)
+	if feedback.State != "feedback_required" {
+		t.Fatalf("feedback state = %q, want %q", feedback.State, "feedback_required")
+	}
+	if !feedback.CanVote {
+		t.Fatal("feedback state should allow voting")
+	}
+	if feedback.ActiveJob.ID != jobID || feedback.ActiveJob.Status != "review_pending" {
+		t.Fatalf("unexpected feedback payload: %+v", feedback.ActiveJob)
+	}
+
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/vote", prompter.apiKey, map[string]any{
+		"vote": "up",
+	}, http.StatusOK, nil)
+
+	var readyAgain struct {
+		State     string `json:"state"`
+		ActiveJob any    `json:"active_job"`
+	}
+	h.requestJSON(t, http.MethodGet, "/sessions/"+sessionID+"/state", prompter.apiKey, nil, http.StatusOK, &readyAgain)
+	if readyAgain.State != "ready_for_prompt" {
+		t.Fatalf("readyAgain state = %q, want %q", readyAgain.State, "ready_for_prompt")
+	}
+	if readyAgain.ActiveJob != nil {
+		t.Fatalf("readyAgain active_job = %#v, want nil", readyAgain.ActiveJob)
+	}
+}
+
+func TestMessagesListSupportsLatestLimit(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	prompter := h.registerAccount(t, "tom")
+	sessionID := h.createSession(t, prompter.apiKey)
+	msg1 := domain.NewID("msg")
+	msg2 := domain.NewID("msg")
+	msg3 := domain.NewID("msg")
+	msg4 := domain.NewID("msg")
+	h.execSQL(t, `INSERT INTO messages(id, session_id, owner_type, owner_id, type, role, content, created_at) VALUES ($1,$2,'account',$3,'text','prompter','m1', now() - interval '4 seconds')`, msg1, sessionID, prompter.accountID)
+	h.execSQL(t, `INSERT INTO messages(id, session_id, owner_type, owner_id, type, role, content, created_at) VALUES ($1,$2,'account',$3,'text','prompter','m2', now() - interval '3 seconds')`, msg2, sessionID, prompter.accountID)
+	h.execSQL(t, `INSERT INTO messages(id, session_id, owner_type, owner_id, type, role, content, created_at) VALUES ($1,$2,'account',$3,'text','prompter','m3', now() - interval '2 seconds')`, msg3, sessionID, prompter.accountID)
+	h.execSQL(t, `INSERT INTO messages(id, session_id, owner_type, owner_id, type, role, content, created_at) VALUES ($1,$2,'account',$3,'text','prompter','m4', now() - interval '1 second')`, msg4, sessionID, prompter.accountID)
+
+	var out struct {
+		Items []struct {
+			ID      string `json:"id"`
+			Content string `json:"content"`
+		} `json:"items"`
+		HasMoreOlder bool   `json:"has_more_older"`
+		NextBeforeID string `json:"next_before_id"`
+	}
+	h.requestJSON(t, http.MethodGet, "/sessions/"+sessionID+"/messages?limit=2", prompter.apiKey, nil, http.StatusOK, &out)
+	if len(out.Items) != 2 {
+		t.Fatalf("message count = %d, want 2", len(out.Items))
+	}
+	if out.Items[0].Content != "m3" || out.Items[1].Content != "m4" {
+		t.Fatalf("unexpected limited messages: %+v", out.Items)
+	}
+	if !out.HasMoreOlder {
+		t.Fatal("has_more_older = false, want true")
+	}
+	if out.NextBeforeID != msg3 {
+		t.Fatalf("next_before_id = %q, want %q", out.NextBeforeID, msg3)
+	}
+
+	var older struct {
+		Items []struct {
+			ID      string `json:"id"`
+			Content string `json:"content"`
+		} `json:"items"`
+		HasMoreOlder bool   `json:"has_more_older"`
+		NextBeforeID string `json:"next_before_id"`
+	}
+	h.requestJSON(t, http.MethodGet, "/sessions/"+sessionID+"/messages?limit=2&before_id="+msg3, prompter.apiKey, nil, http.StatusOK, &older)
+	if len(older.Items) != 2 {
+		t.Fatalf("older message count = %d, want 2", len(older.Items))
+	}
+	if older.Items[0].Content != "m1" || older.Items[1].Content != "m2" {
+		t.Fatalf("unexpected older messages: %+v", older.Items)
+	}
+	if older.HasMoreOlder {
+		t.Fatal("older has_more_older = true, want false")
+	}
+	if older.NextBeforeID != "" {
+		t.Fatalf("older next_before_id = %q, want empty", older.NextBeforeID)
+	}
+
+	h.requestJSON(t, http.MethodGet, "/sessions/"+sessionID+"/messages?limit=0", prompter.apiKey, nil, http.StatusBadRequest, nil)
+	h.requestJSON(t, http.MethodGet, "/sessions/"+sessionID+"/messages?before_id="+msg3, prompter.apiKey, nil, http.StatusBadRequest, nil)
+	h.requestJSON(t, http.MethodGet, "/sessions/"+sessionID+"/messages?limit=2&before_id=msg_missing", prompter.apiKey, nil, http.StatusBadRequest, nil)
+}
+
+func TestSessionCreateAcceptsOptionalTitle(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	account := h.registerAccount(t, "tom")
+	var created struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	}
+	h.requestJSON(t, http.MethodPost, "/sessions", account.apiKey, map[string]any{
+		"title": "incident thread",
+	}, http.StatusCreated, &created)
+
+	if created.Title != "incident thread" {
+		t.Fatalf("created title = %q, want %q", created.Title, "incident thread")
+	}
+
+	var session struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	}
+	h.requestJSON(t, http.MethodGet, "/sessions/"+created.ID, account.apiKey, nil, http.StatusOK, &session)
+	if session.Title != "incident thread" {
+		t.Fatalf("stored title = %q, want %q", session.Title, "incident thread")
+	}
+}
+
+func TestGuestSessionUsesCookieAuthInsteadOfReturningReusableToken(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	client := &http.Client{}
+	var guest struct {
+		GuestID string `json:"guest_id"`
+	}
+	h.rawRequest(t, client, http.MethodPost, "/guest/sessions", nil, nil, http.StatusForbidden)
+	body := h.rawRequest(t, client, http.MethodPost, "/guest/sessions", nil, map[string]string{
+		"Origin": h.app.cfg.FrontendOrigin,
+	}, http.StatusCreated)
+	if err := json.Unmarshal(body, &guest); err != nil {
+		t.Fatalf("decode guest session response: %v", err)
+	}
+	if guest.GuestID == "" {
+		t.Fatal("guest_id was empty")
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("decode guest session map: %v", err)
+	}
+	if _, ok := raw["guest_token"]; ok {
+		t.Fatal("guest_token should not be returned in guest session response")
+	}
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookiejar.New: %v", err)
+	}
+	client.Jar = jar
+	h.rawRequest(t, client, http.MethodPost, "/guest/sessions", nil, map[string]string{
+		"Origin": h.app.cfg.FrontendOrigin,
+	}, http.StatusCreated)
+
+	var session struct {
+		ID string `json:"id"`
+	}
+	body = h.rawRequest(t, client, http.MethodPost, "/sessions", nil, map[string]string{
+		"Origin": h.app.cfg.FrontendOrigin,
+	}, http.StatusCreated)
+	if err := json.Unmarshal(body, &session); err != nil {
+		t.Fatalf("decode session create response: %v", err)
+	}
+	if session.ID == "" {
+		t.Fatal("session id was empty")
+	}
+
+	h.rawRequest(t, client, http.MethodGet, "/sessions", nil, nil, http.StatusUnauthorized)
+}
+
+func TestAccountRegisterRequiresUniqueUsernameAndSeparatesPasswordLoginFromAPIKeys(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	var created struct {
+		AccountID    string `json:"account_id"`
+		APIKey       string `json:"api_key"`
+		SessionToken string `json:"session_token"`
+	}
+	h.requestJSON(t, http.MethodPost, testAccountRegisterPath, "", map[string]any{
+		"name":     "tom",
+		"password": "password123",
+	}, http.StatusCreated, &created)
+
+	h.requestJSON(t, http.MethodPost, testAccountRegisterPath, "", map[string]any{
+		"name":     "Tom",
+		"password": "password123",
+	}, http.StatusConflict, nil)
+
+	apiKeyCountBefore := h.scalarInt(t, `SELECT COUNT(*)::int FROM api_keys WHERE account_id = $1 AND revoked_at IS NULL`, created.AccountID)
+
+	var loggedIn struct {
+		AccountID    string `json:"account_id"`
+		SessionToken string `json:"session_token"`
+	}
+	h.requestJSON(t, http.MethodPost, "/accounts/login", "", map[string]any{
+		"name":     "TOM",
+		"password": "password123",
+	}, http.StatusOK, &loggedIn)
+
+	if loggedIn.AccountID != created.AccountID {
+		t.Fatalf("login account_id = %q, want %q", loggedIn.AccountID, created.AccountID)
+	}
+	if loggedIn.SessionToken == "" {
+		t.Fatal("login session_token was empty")
+	}
+
+	apiKeyCountAfter := h.scalarInt(t, `SELECT COUNT(*)::int FROM api_keys WHERE account_id = $1 AND revoked_at IS NULL`, created.AccountID)
+	if apiKeyCountAfter != apiKeyCountBefore {
+		t.Fatalf("api key count after password login = %d, want %d", apiKeyCountAfter, apiKeyCountBefore)
+	}
+
+	var me struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	h.requestJSON(t, http.MethodGet, "/account/me", loggedIn.SessionToken, nil, http.StatusOK, &me)
+	if me.ID != created.AccountID {
+		t.Fatalf("me.id = %q, want %q", me.ID, created.AccountID)
+	}
+	if me.Name != "tom" {
+		t.Fatalf("me.name = %q, want %q", me.Name, "tom")
+	}
+
+	var meByAPIKey struct {
+		ID string `json:"id"`
+	}
+	h.requestJSON(t, http.MethodGet, "/account/me", created.APIKey, nil, http.StatusOK, &meByAPIKey)
+	if meByAPIKey.ID != created.AccountID {
+		t.Fatalf("api key auth me.id = %q, want %q", meByAPIKey.ID, created.AccountID)
+	}
+
+	var keyList struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	h.requestJSON(t, http.MethodGet, "/account/api-keys", created.SessionToken, nil, http.StatusOK, &keyList)
+	if len(keyList.Items) != 1 {
+		t.Fatalf("key list count = %d, want 1", len(keyList.Items))
+	}
+	if keyList.Items[0].ID != created.APIKey {
+		t.Fatalf("listed api key id = %q, want %q", keyList.Items[0].ID, created.APIKey)
+	}
+}
+
+func TestAccountRegisterRequiresTurnstileWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.TurnstileSecretKey = "turnstile-test-secret"
+	})
+	h.app.verifyTurnstile = func(_ context.Context, token, _ string) error {
+		if token == "good-token" {
+			return nil
+		}
+		return errors.New("invalid_turnstile")
+	}
+
+	h.requestJSON(t, http.MethodPost, testAccountRegisterPath, "", map[string]any{
+		"name":     "tom",
+		"password": "password123",
+	}, http.StatusBadRequest, nil)
+
+	var created struct {
+		AccountID string `json:"account_id"`
+	}
+	h.requestJSON(t, http.MethodPost, testAccountRegisterPath, "", map[string]any{
+		"name":            "tom",
+		"password":        "password123",
+		"turnstile_token": "good-token",
+	}, http.StatusCreated, &created)
+	if created.AccountID == "" {
+		t.Fatal("account_id was empty")
+	}
+}
+
+func TestAccountLogoutRevokesSessionButLeavesAPIKeyUsable(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	var created struct {
+		AccountID    string `json:"account_id"`
+		APIKey       string `json:"api_key"`
+		SessionToken string `json:"session_token"`
+	}
+	h.requestJSON(t, http.MethodPost, testAccountRegisterPath, "", map[string]any{
+		"name":     "tom",
+		"password": "password123",
+	}, http.StatusCreated, &created)
+
+	h.requestJSON(t, http.MethodPost, "/account/logout", created.SessionToken, nil, http.StatusOK, nil)
+
+	h.requestJSON(t, http.MethodGet, "/account/me", created.SessionToken, nil, http.StatusUnauthorized, nil)
+
+	var me struct {
+		ID string `json:"id"`
+	}
+	h.requestJSON(t, http.MethodGet, "/account/me", created.APIKey, nil, http.StatusOK, &me)
+	if me.ID != created.AccountID {
+		t.Fatalf("api key auth me.id = %q, want %q", me.ID, created.AccountID)
+	}
+}
+
+func TestAccountAPIKeyLimitIsCappedAtFiveActiveKeys(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+	account := h.registerAccount(t, "tom")
+
+	for i := 0; i < 4; i++ {
+		h.requestJSON(t, http.MethodPost, "/account/api-keys", account.apiKey, map[string]any{
+			"label": fmt.Sprintf("key-%d", i+1),
+		}, http.StatusCreated, nil)
+	}
+
+	activeKeyCount := h.scalarInt(t, `SELECT COUNT(*)::int FROM api_keys WHERE account_id = $1 AND revoked_at IS NULL`, account.accountID)
+	if activeKeyCount != 5 {
+		t.Fatalf("active api key count = %d, want 5", activeKeyCount)
+	}
+
+	h.requestJSON(t, http.MethodPost, "/account/api-keys", account.apiKey, map[string]any{
+		"label": "overflow",
+	}, http.StatusConflict, nil)
+
+	var keyToDelete struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	h.requestJSON(t, http.MethodGet, "/account/api-keys", account.apiKey, nil, http.StatusOK, &keyToDelete)
+	if len(keyToDelete.Items) != 5 {
+		t.Fatalf("api key list count = %d, want 5", len(keyToDelete.Items))
+	}
+	h.requestJSON(t, http.MethodDelete, "/account/api-keys/"+keyToDelete.Items[0].ID, account.apiKey, nil, http.StatusOK, nil)
+	h.requestJSON(t, http.MethodPost, "/account/api-keys", account.apiKey, map[string]any{
+		"label": "replacement",
+	}, http.StatusCreated, nil)
+}
+
+func TestLeaderboardsReturnRealSnapshotData(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	prompter := h.registerAccount(t, "prompter")
+	responder := h.registerAccount(t, "alice")
+	dispatcher := h.registerAccount(t, "dora")
+	rich := h.registerAccount(t, "richie")
+
+	h.execSQL(t, `UPDATE wallets SET balance = 200 WHERE owner_type = 'account' AND owner_id = $1`, responder.accountID)
+	h.execSQL(t, `UPDATE wallets SET balance = 250 WHERE owner_type = 'account' AND owner_id = $1`, dispatcher.accountID)
+	h.execSQL(t, `UPDATE wallets SET balance = 999 WHERE owner_type = 'account' AND owner_id = $1`, rich.accountID)
+
+	for i := 0; i < 50; i++ {
+		vote := "up"
+		if i >= 40 {
+			vote = "down"
+		}
+		h.seedRatedCompletedJob(t, prompter.accountID, responder.accountID, dispatcher.accountID, vote)
+	}
+
+	var successBoard struct {
+		Items []struct {
+			AccountName   string `json:"account_name"`
+			MetricDisplay string `json:"metric_display"`
+		} `json:"items"`
+	}
+	h.requestJSON(t, http.MethodGet, "/leaderboards?category="+app.LeaderboardCategoryJobSuccess, "", nil, http.StatusOK, &successBoard)
+	if len(successBoard.Items) == 0 {
+		t.Fatal("job success leaderboard was empty")
+	}
+	if successBoard.Items[0].AccountName != "alice" {
+		t.Fatalf("job success leaderboard first account = %q, want %q", successBoard.Items[0].AccountName, "alice")
+	}
+	if successBoard.Items[0].MetricDisplay != "80.0%" {
+		t.Fatalf("job success leaderboard metric = %q, want %q", successBoard.Items[0].MetricDisplay, "80.0%")
+	}
+
+	var dispatchBoard struct {
+		Items []struct {
+			AccountName   string `json:"account_name"`
+			MetricDisplay string `json:"metric_display"`
+		} `json:"items"`
+	}
+	h.requestJSON(t, http.MethodGet, "/leaderboards?category="+app.LeaderboardCategoryDispatchAccuracy, "", nil, http.StatusOK, &dispatchBoard)
+	if len(dispatchBoard.Items) == 0 {
+		t.Fatal("dispatch leaderboard was empty")
+	}
+	if dispatchBoard.Items[0].AccountName != "dora" {
+		t.Fatalf("dispatch leaderboard first account = %q, want %q", dispatchBoard.Items[0].AccountName, "dora")
+	}
+	if dispatchBoard.Items[0].MetricDisplay != "80.0%" {
+		t.Fatalf("dispatch leaderboard metric = %q, want %q", dispatchBoard.Items[0].MetricDisplay, "80.0%")
+	}
+
+	var creditsBoard struct {
+		Items []struct {
+			AccountName   string `json:"account_name"`
+			MetricDisplay string `json:"metric_display"`
+		} `json:"items"`
+	}
+	h.requestJSON(t, http.MethodGet, "/leaderboards?category="+app.LeaderboardCategoryTotalAvailableFunds, "", nil, http.StatusOK, &creditsBoard)
+	if len(creditsBoard.Items) == 0 {
+		t.Fatal("credits leaderboard was empty")
+	}
+	if creditsBoard.Items[0].AccountName != "dora" {
+		t.Fatalf("credits leaderboard first account = %q, want %q", creditsBoard.Items[0].AccountName, "dora")
+	}
+	if creditsBoard.Items[0].MetricDisplay != "250.00 credits" {
+		t.Fatalf("credits leaderboard metric = %q, want %q", creditsBoard.Items[0].MetricDisplay, "250.00 credits")
+	}
+	for _, item := range creditsBoard.Items {
+		if item.AccountName == "richie" {
+			t.Fatal("credits leaderboard included unqualified rich account")
+		}
+	}
+}
+
+func TestRoutingAndPoolExposeTimeLimitAndBonusTip(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.PollAssignmentWait = 0
+	})
+
+	prompter := h.registerAccount(t, "tom")
+	dispatcher := h.registerAccount(t, "dora")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+
+	var messageOut struct {
+		JobID string `json:"job_id"`
+	}
+	h.requestJSON(t, http.MethodPost, "/sessions/"+sessionID+"/messages", prompter.apiKey, map[string]any{
+		"content":            "with bonus tip",
+		"time_limit_minutes": 10,
+		"tip_amount":         1.5,
+	}, http.StatusCreated, &messageOut)
+
+	var routing struct {
+		Items []struct {
+			ID               string  `json:"id"`
+			TimeLimitMinutes int     `json:"time_limit_minutes"`
+			TipAmount        float64 `json:"tip_amount"`
+		} `json:"items"`
+	}
+	h.requestJSON(t, http.MethodGet, "/routing/jobs", dispatcher.apiKey, nil, http.StatusOK, &routing)
+	if len(routing.Items) != 1 {
+		t.Fatalf("routing item count = %d, want 1", len(routing.Items))
+	}
+	if routing.Items[0].ID != messageOut.JobID {
+		t.Fatalf("routing job id = %q, want %q", routing.Items[0].ID, messageOut.JobID)
+	}
+	if routing.Items[0].TimeLimitMinutes != 10 {
+		t.Fatalf("routing time_limit_minutes = %d, want 10", routing.Items[0].TimeLimitMinutes)
+	}
+	if routing.Items[0].TipAmount != 1.5 {
+		t.Fatalf("routing tip_amount = %v, want 1.5", routing.Items[0].TipAmount)
+	}
+
+	h.execSQL(t, `UPDATE jobs SET status = 'system_pool', last_system_pool_entered_at = now() WHERE id = $1`, messageOut.JobID)
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
+
+	var work struct {
+		Mode       string `json:"mode"`
+		Candidates []struct {
+			ID               string  `json:"id"`
+			TimeLimitMinutes int     `json:"time_limit_minutes"`
+			TipAmount        float64 `json:"tip_amount"`
+		} `json:"candidates"`
+	}
+	h.requestJSON(t, http.MethodGet, "/responders/work", responder.apiKey, nil, http.StatusOK, &work)
+	if work.Mode != "pool" || len(work.Candidates) != 1 {
+		t.Fatalf("unexpected pool payload: %+v", work)
+	}
+	if work.Candidates[0].ID != messageOut.JobID {
+		t.Fatalf("pool candidate id = %q, want %q", work.Candidates[0].ID, messageOut.JobID)
+	}
+	if work.Candidates[0].TimeLimitMinutes != 10 {
+		t.Fatalf("pool time_limit_minutes = %d, want 10", work.Candidates[0].TimeLimitMinutes)
+	}
+	if work.Candidates[0].TipAmount != 1.5 {
+		t.Fatalf("pool tip_amount = %v, want 1.5", work.Candidates[0].TipAmount)
+	}
+}
+
+func TestPoolClaimReplyVoteFlowUpdatesStats(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "tell me something useful")
+
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
+
+	var work struct {
+		Mode       string `json:"mode"`
+		Candidates []struct {
+			ID string `json:"id"`
+		} `json:"candidates"`
+	}
+	h.requestJSON(t, http.MethodGet, "/responders/work", responder.apiKey, nil, http.StatusOK, &work)
+	if work.Mode != "pool" || len(work.Candidates) != 1 {
+		t.Fatalf("unexpected work payload: mode=%q candidates=%d", work.Mode, len(work.Candidates))
+	}
+
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/claim", responder.apiKey, nil, http.StatusOK, nil)
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/reply", responder.apiKey, map[string]any{"content": "here is a reply"}, http.StatusOK, nil)
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/vote", prompter.apiKey, map[string]any{"vote": "up"}, http.StatusOK, nil)
+
+	if got := h.walletBalance(t, responder.apiKey); got != 101.4 {
+		t.Fatalf("responder balance = %v, want %v", got, 101.4)
+	}
+
+	var prompterStats struct {
+		FeedbackRate string `json:"feedback_rate"`
+	}
+	h.requestJSON(t, http.MethodGet, "/account/stats", prompter.apiKey, nil, http.StatusOK, &prompterStats)
+	if prompterStats.FeedbackRate != "1 / 1" {
+		t.Fatalf("prompter feedback_rate = %q, want %q", prompterStats.FeedbackRate, "1 / 1")
+	}
+
+	var responderStats struct {
+		JobSuccessRate string `json:"job_success_rate"`
+		FeedbackRate   string `json:"feedback_rate"`
+	}
+	h.requestJSON(t, http.MethodGet, "/account/stats", responder.apiKey, nil, http.StatusOK, &responderStats)
+	if responderStats.JobSuccessRate != "100.0%" {
+		t.Fatalf("responder job_success_rate = %q, want %q", responderStats.JobSuccessRate, "100.0%")
+	}
+	if responderStats.FeedbackRate != "n/a" {
+		t.Fatalf("responder feedback_rate = %q, want %q", responderStats.FeedbackRate, "n/a")
+	}
+}
+
+func TestPoolClaimReplyDownvoteSlashesStake(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "say something bad")
+
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
+
+	var work struct {
+		Mode       string `json:"mode"`
+		Candidates []struct {
+			ID string `json:"id"`
+		} `json:"candidates"`
+	}
+	h.requestJSON(t, http.MethodGet, "/responders/work", responder.apiKey, nil, http.StatusOK, &work)
+	if work.Mode != "pool" || len(work.Candidates) != 1 || work.Candidates[0].ID != jobID {
+		t.Fatalf("unexpected work payload: %+v", work)
+	}
+
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/claim", responder.apiKey, nil, http.StatusOK, nil)
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/reply", responder.apiKey, map[string]any{"content": "garbage"}, http.StatusOK, nil)
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/vote", prompter.apiKey, map[string]any{"vote": "down"}, http.StatusOK, nil)
+
+	if got := h.walletBalance(t, responder.apiKey); got != 99.4 {
+		t.Fatalf("responder balance = %v, want %v", got, 99.4)
+	}
+}
+
+func TestAutoReviewRefundsStakeWithoutReward(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "ghost this one")
+
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
+
+	var work struct {
+		Mode       string `json:"mode"`
+		Candidates []struct {
+			ID string `json:"id"`
+		} `json:"candidates"`
+	}
+	h.requestJSON(t, http.MethodGet, "/responders/work", responder.apiKey, nil, http.StatusOK, &work)
+	if work.Mode != "pool" || len(work.Candidates) != 1 || work.Candidates[0].ID != jobID {
+		t.Fatalf("unexpected work payload: %+v", work)
+	}
+
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/claim", responder.apiKey, nil, http.StatusOK, nil)
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/reply", responder.apiKey, map[string]any{"content": "reply with no rating"}, http.StatusOK, nil)
+	h.execSQL(t, `UPDATE jobs SET review_deadline_at = now() - interval '1 second' WHERE id = $1`, jobID)
+
+	var internal struct {
+		Affected int64 `json:"affected"`
+	}
+	h.requestJSON(t, http.MethodPost, "/internal/jobs/auto-review", "", nil, http.StatusOK, &internal)
+	if internal.Affected != 1 {
+		t.Fatalf("affected = %d, want 1", internal.Affected)
+	}
+
+	var job struct {
+		Status       string `json:"status"`
+		PrompterVote string `json:"prompter_vote"`
+	}
+	h.requestJSON(t, http.MethodGet, "/jobs/"+jobID, prompter.apiKey, nil, http.StatusOK, &job)
+	if job.Status != "auto_settled" {
+		t.Fatalf("job status = %q, want %q", job.Status, "auto_settled")
+	}
+	if job.PrompterVote != "auto" {
+		t.Fatalf("prompter_vote = %q, want %q", job.PrompterVote, "auto")
+	}
+
+	if got := h.walletBalance(t, responder.apiKey); got != 100.0 {
+		t.Fatalf("responder balance = %v, want %v", got, 100.0)
+	}
+}
+
+func TestResponderWorkReturnsAssignedForAlreadyClaimedPoolJob(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "one job at a time")
+
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
+
+	var initialWork struct {
+		Mode       string `json:"mode"`
+		Candidates []struct {
+			ID string `json:"id"`
+		} `json:"candidates"`
+	}
+	h.requestJSON(t, http.MethodGet, "/responders/work", responder.apiKey, nil, http.StatusOK, &initialWork)
+	if initialWork.Mode != "pool" || len(initialWork.Candidates) != 1 || initialWork.Candidates[0].ID != jobID {
+		t.Fatalf("unexpected initial work payload: %+v", initialWork)
+	}
+
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/claim", responder.apiKey, nil, http.StatusOK, nil)
+
+	var resumedWork struct {
+		Mode  string `json:"mode"`
+		JobID string `json:"job_id"`
+	}
+	h.requestJSON(t, http.MethodGet, "/responders/work", responder.apiKey, nil, http.StatusOK, &resumedWork)
+	if resumedWork.Mode != "assigned" {
+		t.Fatalf("mode = %q, want %q", resumedWork.Mode, "assigned")
+	}
+	if resumedWork.JobID != jobID {
+		t.Fatalf("job_id = %q, want %q", resumedWork.JobID, jobID)
+	}
+}
+
+func TestPrompterCancelClaimedJobAppliesPenalty(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "cancel this after claim")
+
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
+
+	var work struct {
+		Mode       string `json:"mode"`
+		Candidates []struct {
+			ID string `json:"id"`
+		} `json:"candidates"`
+	}
+	h.requestJSON(t, http.MethodGet, "/responders/work", responder.apiKey, nil, http.StatusOK, &work)
+	if work.Mode != "pool" || len(work.Candidates) != 1 || work.Candidates[0].ID != jobID {
+		t.Fatalf("unexpected work payload: %+v", work)
+	}
+
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/claim", responder.apiKey, nil, http.StatusOK, nil)
+
+	var cancelResult struct {
+		OK            bool    `json:"ok"`
+		Penalized     bool    `json:"penalized"`
+		PenaltyAmount float64 `json:"penalty_amount"`
+	}
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/cancel", prompter.apiKey, nil, http.StatusOK, &cancelResult)
+	if !cancelResult.OK || !cancelResult.Penalized {
+		t.Fatalf("unexpected cancel result: %+v", cancelResult)
+	}
+	if math.Abs(cancelResult.PenaltyAmount-0.2) > 1e-9 {
+		t.Fatalf("penalty_amount = %v, want %v", cancelResult.PenaltyAmount, 0.2)
+	}
+
+	balance := h.walletBalance(t, prompter.apiKey)
+	if math.Abs(balance-97.8) > 1e-9 {
+		t.Fatalf("prompter balance = %v, want %v", balance, 97.8)
+	}
+
+	var job struct {
+		Status string `json:"status"`
+	}
+	h.requestJSON(t, http.MethodGet, "/jobs/"+jobID, prompter.apiKey, nil, http.StatusOK, &job)
+	if job.Status != "cancelled" {
+		t.Fatalf("job status = %q, want %q", job.Status, "cancelled")
+	}
+}
+
+func TestDirectAssignmentResponderWorkReturnsAssignedJob(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.RoutingWindow = 5 * time.Minute
+		cfg.PollAssignmentWait = 30 * time.Second
+	})
+
+	prompter := h.registerAccount(t, "tom")
+	dispatcher := h.registerAccount(t, "dora")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "assign this directly")
+
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
+
+	var assignment struct {
+		ID string `json:"id"`
+	}
+	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
+		"job_id":               jobID,
+		"responder_owner_type": "account",
+		"responder_owner_id":   responder.accountID,
+	}, http.StatusCreated, &assignment)
+
+	var work struct {
+		Mode  string `json:"mode"`
+		JobID string `json:"job_id"`
+	}
+	h.requestJSON(t, http.MethodGet, "/responders/work", responder.apiKey, nil, http.StatusOK, &work)
+	if work.Mode != "assigned" {
+		t.Fatalf("mode = %q, want %q", work.Mode, "assigned")
+	}
+	if work.JobID != jobID {
+		t.Fatalf("job_id = %q, want %q", work.JobID, jobID)
+	}
+
+	var assignmentState struct {
+		Status string `json:"status"`
+	}
+	h.requestJSON(t, http.MethodGet, "/assignments/"+assignment.ID, dispatcher.apiKey, nil, http.StatusOK, &assignmentState)
+	if assignmentState.Status != "active" {
+		t.Fatalf("assignment status = %q, want %q", assignmentState.Status, "active")
+	}
+}
+
+func TestAssignmentTimeoutReturnsJobToSystemPool(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.RoutingWindow = 5 * time.Minute
+		cfg.PollAssignmentWait = 0
+	})
+
+	prompter := h.registerAccount(t, "tom")
+	dispatcher := h.registerAccount(t, "dora")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "time out this assignment")
+
+	var assignment struct {
+		ID string `json:"id"`
+	}
+	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
+		"job_id":               jobID,
+		"responder_owner_type": "account",
+		"responder_owner_id":   responder.accountID,
+	}, http.StatusCreated, &assignment)
+
+	h.execSQL(t, `UPDATE assignments SET deadline_at = now() - interval '1 second' WHERE id = $1`, assignment.ID)
+
+	var internal struct {
+		Affected int64 `json:"affected"`
+	}
+	h.requestJSON(t, http.MethodPost, "/internal/assignments/process-timeouts", "", nil, http.StatusOK, &internal)
+	if internal.Affected != 1 {
+		t.Fatalf("affected = %d, want 1", internal.Affected)
+	}
+
+	var assignmentState struct {
+		Status string `json:"status"`
+	}
+	h.requestJSON(t, http.MethodGet, "/assignments/"+assignment.ID, dispatcher.apiKey, nil, http.StatusOK, &assignmentState)
+	if assignmentState.Status != "timeout" {
+		t.Fatalf("assignment status = %q, want %q", assignmentState.Status, "timeout")
+	}
+
+	var job struct {
+		Status string `json:"status"`
+	}
+	h.requestJSON(t, http.MethodGet, "/jobs/"+jobID, prompter.apiKey, nil, http.StatusOK, &job)
+	if job.Status != "system_pool" {
+		t.Fatalf("job status = %q, want %q", job.Status, "system_pool")
+	}
+
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
+	var work struct {
+		Mode       string `json:"mode"`
+		Candidates []struct {
+			ID string `json:"id"`
+		} `json:"candidates"`
+	}
+	h.requestJSON(t, http.MethodGet, "/responders/work", responder.apiKey, nil, http.StatusOK, &work)
+	if work.Mode != "pool" || len(work.Candidates) != 1 || work.Candidates[0].ID != jobID {
+		t.Fatalf("unexpected work payload after timeout: %+v", work)
+	}
+}
+
+func TestRoutingExpiryMovesJobIntoSystemPool(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.RoutingWindow = 5 * time.Minute
+		cfg.PollAssignmentWait = 0
+	})
+
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "let routing expire")
+
+	h.execSQL(t, `UPDATE jobs SET routing_ends_at = now() - interval '1 second' WHERE id = $1`, jobID)
+
+	var internal struct {
+		Affected int64 `json:"affected"`
+	}
+	h.requestJSON(t, http.MethodPost, "/internal/jobs/process-routing-expiry", "", nil, http.StatusOK, &internal)
+	if internal.Affected != 1 {
+		t.Fatalf("affected = %d, want 1", internal.Affected)
+	}
+
+	var job struct {
+		Status string `json:"status"`
+	}
+	h.requestJSON(t, http.MethodGet, "/jobs/"+jobID, prompter.apiKey, nil, http.StatusOK, &job)
+	if job.Status != "system_pool" {
+		t.Fatalf("job status = %q, want %q", job.Status, "system_pool")
+	}
+
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
+	var work struct {
+		Mode       string `json:"mode"`
+		Candidates []struct {
+			ID string `json:"id"`
+		} `json:"candidates"`
+	}
+	h.requestJSON(t, http.MethodGet, "/responders/work", responder.apiKey, nil, http.StatusOK, &work)
+	if work.Mode != "pool" || len(work.Candidates) != 1 || work.Candidates[0].ID != jobID {
+		t.Fatalf("unexpected work payload after routing expiry: %+v", work)
+	}
+}
+
+func TestPoolRotationMovesUnclaimedJobBackToRouting(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.RoutingWindow = 5 * time.Minute
+		cfg.PoolDwellWindow = 30 * time.Second
+		cfg.PollAssignmentWait = 0
+	})
+
+	prompter := h.registerAccount(t, "tom")
+	dispatcher := h.registerAccount(t, "dora")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "rotate this pool job back to routing")
+
+	h.execSQL(t, `UPDATE jobs SET status = 'system_pool', last_system_pool_entered_at = now() - interval '31 seconds' WHERE id = $1`, jobID)
+
+	var internal struct {
+		Affected int64 `json:"affected"`
+	}
+	h.requestJSON(t, http.MethodPost, "/internal/jobs/process-pool-rotation", "", nil, http.StatusOK, &internal)
+	if internal.Affected != 1 {
+		t.Fatalf("affected = %d, want 1", internal.Affected)
+	}
+
+	var job struct {
+		Status string `json:"status"`
+	}
+	h.requestJSON(t, http.MethodGet, "/jobs/"+jobID, prompter.apiKey, nil, http.StatusOK, &job)
+	if job.Status != "routing" {
+		t.Fatalf("job status = %q, want %q", job.Status, "routing")
+	}
+
+	var routing struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	h.requestJSON(t, http.MethodGet, "/routing/jobs", dispatcher.apiKey, nil, http.StatusOK, &routing)
+	if len(routing.Items) != 1 || routing.Items[0].ID != jobID {
+		t.Fatalf("unexpected routing jobs payload: %+v", routing)
+	}
+}
+
+func TestPoolRotationDoesNotMoveActivelyClaimedJob(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.RoutingWindow = 5 * time.Minute
+		cfg.PoolDwellWindow = 30 * time.Second
+		cfg.PollAssignmentWait = 0
+	})
+
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "claimed pool job should stay put")
+
+	h.execSQL(t, `UPDATE jobs SET status = 'system_pool', last_system_pool_entered_at = now() WHERE id = $1`, jobID)
+
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/claim", responder.apiKey, nil, http.StatusOK, nil)
+	h.execSQL(t, `UPDATE jobs SET last_system_pool_entered_at = now() - interval '31 seconds' WHERE id = $1`, jobID)
+
+	var internal struct {
+		Affected int64 `json:"affected"`
+	}
+	h.requestJSON(t, http.MethodPost, "/internal/jobs/process-pool-rotation", "", nil, http.StatusOK, &internal)
+	if internal.Affected != 0 {
+		t.Fatalf("affected = %d, want 0", internal.Affected)
+	}
+
+	var job struct {
+		Status string `json:"status"`
+	}
+	h.requestJSON(t, http.MethodGet, "/jobs/"+jobID, prompter.apiKey, nil, http.StatusOK, &job)
+	if job.Status != "system_pool" {
+		t.Fatalf("job status = %q, want %q", job.Status, "system_pool")
+	}
+
+	var work struct {
+		Mode  string `json:"mode"`
+		JobID string `json:"job_id"`
+	}
+	h.requestJSON(t, http.MethodGet, "/responders/work", responder.apiKey, nil, http.StatusOK, &work)
+	if work.Mode != "assigned" || work.JobID != jobID {
+		t.Fatalf("unexpected claimed-work payload: %+v", work)
+	}
+}
+
+type testAccount struct {
+	accountID string
+	apiKey    string
+}
+
+func newIntegrationHarness(t *testing.T) *integrationHarness {
+	return newIntegrationHarnessWithConfig(t, nil)
+}
+
+func newIntegrationHarnessWithConfig(t *testing.T, mutate func(*config.Config)) *integrationHarness {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	baseURL := integrationDatabaseURL()
+	adminPool, err := db.Connect(ctx, baseURL)
+	if err != nil {
+		t.Skipf("integration db unavailable: %v", err)
+	}
+
+	schema := domain.NewID("itest")
+	if _, err := adminPool.Exec(ctx, fmt.Sprintf(`CREATE SCHEMA "%s"`, schema)); err != nil {
+		adminPool.Close()
+		t.Fatalf("create schema: %v", err)
+	}
+
+	appURL := withSearchPath(baseURL, schema)
+	appPool, err := db.Connect(ctx, appURL)
+	if err != nil {
+		_, _ = adminPool.Exec(ctx, fmt.Sprintf(`DROP SCHEMA IF EXISTS "%s" CASCADE`, schema))
+		adminPool.Close()
+		t.Fatalf("connect app pool: %v", err)
+	}
+
+	migrationsDir := filepath.Join("..", "..", "migrations")
+	if err := db.Migrate(ctx, appPool, migrationsDir); err != nil {
+		appPool.Close()
+		_, _ = adminPool.Exec(ctx, fmt.Sprintf(`DROP SCHEMA IF EXISTS "%s" CASCADE`, schema))
+		adminPool.Close()
+		t.Fatalf("migrate: %v", err)
+	}
+
+	cfg := config.Config{
+		HTTPAddr:                 ":0",
+		DatabaseURL:              appURL,
+		FrontendOrigin:           "http://localhost:5173",
+		GuestTokenSecret:         "integration-secret",
+		AdminPathToken:           "integration-admin",
+		SignupPathToken:          "clawgrid-signup",
+		WorkerTick:               time.Second,
+		PostFee:                  2.0,
+		ResponderPool:            1.4,
+		ResponderStake:           0.6,
+		DispatcherPool:           0.4,
+		Sink:                     0.2,
+		DispatchPenalty:          0.2,
+		ResponderPenalty:         0.2,
+		PrompterCancelPenalty:    0.2,
+		GuestInitialBalance:      100,
+		AccountInitialBalance:    100,
+		RefreshInterval:          5 * time.Hour,
+		GuestRefreshThreshold:    1,
+		GuestRefreshTarget:       5,
+		AccountRefreshThreshold:  5,
+		AccountRefreshTarget:     25,
+		GuestJobInactivityExpiry: 24 * time.Hour,
+		RoutingWindow:            0,
+		PoolDwellWindow:          60 * time.Second,
+		JobExpiry:                24 * time.Hour,
+		ReviewWindow:             24 * time.Hour,
+		AssignmentDeadline:       30 * time.Minute,
+		PollAssignmentWait:       0,
+		ResponderActiveWindow:    12 * time.Second,
+	}
+	if mutate != nil {
+		mutate(&cfg)
+	}
+
+	appServer := New(appPool, cfg)
+	srv := httptest.NewServer(appServer.Routes())
+	h := &integrationHarness{
+		app:       appServer,
+		server:    srv,
+		adminPool: adminPool,
+		appPool:   appPool,
+		baseURL:   srv.URL,
+		schema:    schema,
+	}
+	t.Cleanup(func() {
+		srv.Close()
+		appPool.Close()
+		_, _ = adminPool.Exec(context.Background(), fmt.Sprintf(`DROP SCHEMA IF EXISTS "%s" CASCADE`, schema))
+		adminPool.Close()
+	})
+	return h
+}
+
+func integrationDatabaseURL() string {
+	if v := os.Getenv("CLAWGRID_TEST_DATABASE_URL"); v != "" {
+		return v
+	}
+	return "postgres://clawgrid:clawgrid@localhost:5432/clawgrid?sslmode=disable"
+}
+
+func withSearchPath(baseURL, schema string) string {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return baseURL
+	}
+	q := u.Query()
+	q.Set("search_path", schema)
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+func (h *integrationHarness) registerAccount(t *testing.T, name string) testAccount {
+	t.Helper()
+	var out struct {
+		AccountID string `json:"account_id"`
+		APIKey    string `json:"api_key"`
+	}
+	h.requestJSON(t, http.MethodPost, testAccountRegisterPath, "", map[string]any{"name": name, "password": "password123"}, http.StatusCreated, &out)
+	return testAccount{accountID: out.AccountID, apiKey: out.APIKey}
+}
+
+func (h *integrationHarness) createSession(t *testing.T, apiKey string) string {
+	t.Helper()
+	var out struct {
+		ID string `json:"id"`
+	}
+	h.requestJSON(t, http.MethodPost, "/sessions", apiKey, nil, http.StatusCreated, &out)
+	return out.ID
+}
+
+func (h *integrationHarness) postMessage(t *testing.T, apiKey, sessionID, content string) string {
+	t.Helper()
+	var out struct {
+		JobID string `json:"job_id"`
+	}
+	h.requestJSON(t, http.MethodPost, "/sessions/"+sessionID+"/messages", apiKey, map[string]any{
+		"content":            content,
+		"time_limit_minutes": 5,
+	}, http.StatusCreated, &out)
+	return out.JobID
+}
+
+func (h *integrationHarness) seedRatedCompletedJob(t *testing.T, prompterAccountID, responderAccountID, dispatcherAccountID, vote string) {
+	t.Helper()
+
+	now := time.Now().UTC()
+	sessionID := domain.NewID("ses")
+	requestMessageID := domain.NewID("msg")
+	responseMessageID := domain.NewID("msg")
+	jobID := domain.NewID("job")
+	assignmentID := domain.NewID("asn")
+
+	h.execSQL(t, `INSERT INTO sessions(id, owner_type, owner_id, status, created_at) VALUES ($1, 'account', $2, 'active', $3)`,
+		sessionID, prompterAccountID, now.Add(-2*time.Hour))
+	h.execSQL(t, `INSERT INTO messages(id, session_id, owner_type, owner_id, type, role, content, created_at) VALUES ($1, $2, 'account', $3, 'text', 'prompter', 'prompt', $4)`,
+		requestMessageID, sessionID, prompterAccountID, now.Add(-2*time.Hour))
+	h.execSQL(t, `INSERT INTO messages(id, session_id, owner_type, owner_id, type, role, content, created_at) VALUES ($1, $2, 'account', $3, 'text', 'responder', 'reply', $4)`,
+		responseMessageID, sessionID, responderAccountID, now.Add(-90*time.Minute))
+	h.execSQL(t, `
+INSERT INTO jobs(
+  id, session_id, request_message_id, owner_type, owner_id, status,
+  created_at, activated_at, expires_at, routing_ends_at, response_message_id,
+  tip_amount, post_fee_amount, prompter_vote, review_deadline_at
+) VALUES ($1,$2,$3,'account',$4,'completed',$5,$6,$7,$8,$9,0,2,$10,$11)`,
+		jobID, sessionID, requestMessageID, prompterAccountID,
+		now.Add(-2*time.Hour), now.Add(-2*time.Hour), now.Add(24*time.Hour), now.Add(-110*time.Minute),
+		responseMessageID, vote, now.Add(-60*time.Minute))
+	h.execSQL(t, `
+INSERT INTO assignments(
+  id, job_id, dispatcher_owner_type, dispatcher_owner_id,
+  responder_owner_type, responder_owner_id, assigned_at, deadline_at, status
+) VALUES ($1,$2,'account',$3,'account',$4,$5,$6,'success')`,
+		assignmentID, jobID, dispatcherAccountID, responderAccountID, now.Add(-100*time.Minute), now.Add(-70*time.Minute))
+}
+
+func (h *integrationHarness) requestJSON(t *testing.T, method, path, apiKey string, body any, wantStatus int, out any) {
+	t.Helper()
+
+	var payload []byte
+	if body != nil {
+		var err error
+		payload, err = json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal body: %v", err)
+		}
+	}
+
+	req := httptest.NewRequest(method, h.baseURL+path, bytes.NewReader(payload))
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	rec := httptest.NewRecorder()
+	h.server.Config.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != wantStatus {
+		t.Fatalf("%s %s status = %d, want %d, body=%s", method, path, rec.Code, wantStatus, rec.Body.String())
+	}
+	if out == nil {
+		return
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), out); err != nil {
+		t.Fatalf("decode response for %s %s: %v, body=%s", method, path, err, rec.Body.String())
+	}
+}
+
+func (h *integrationHarness) rawRequest(t *testing.T, client *http.Client, method, path string, body any, headers map[string]string, wantStatus int) []byte {
+	t.Helper()
+
+	var payload []byte
+	if body != nil {
+		var err error
+		payload, err = json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal body: %v", err)
+		}
+	}
+
+	req, err := http.NewRequest(method, h.baseURL+path, bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s request failed: %v", method, path, err)
+	}
+	defer resp.Body.Close()
+
+	buf := new(bytes.Buffer)
+	if _, err := buf.ReadFrom(resp.Body); err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	if resp.StatusCode != wantStatus {
+		t.Fatalf("%s %s status = %d, want %d, body=%s", method, path, resp.StatusCode, wantStatus, buf.String())
+	}
+	return buf.Bytes()
+}
+
+func (h *integrationHarness) walletBalance(t *testing.T, apiKey string) float64 {
+	t.Helper()
+
+	var out struct {
+		Balance float64 `json:"balance"`
+	}
+	h.requestJSON(t, http.MethodGet, "/wallets/current", apiKey, nil, http.StatusOK, &out)
+	return out.Balance
+}
+
+func (h *integrationHarness) execSQL(t *testing.T, query string, args ...any) {
+	t.Helper()
+
+	if _, err := h.appPool.Exec(context.Background(), query, args...); err != nil {
+		t.Fatalf("execSQL failed: %v", err)
+	}
+}
+
+func (h *integrationHarness) scalarInt(t *testing.T, query string, args ...any) int {
+	t.Helper()
+
+	var value int
+	if err := h.appPool.QueryRow(context.Background(), query, args...).Scan(&value); err != nil {
+		t.Fatalf("scalarInt failed: %v", err)
+	}
+	return value
+}

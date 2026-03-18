@@ -1,0 +1,24 @@
+FROM golang:1.24-alpine AS base
+WORKDIR /app
+RUN apk add --no-cache ca-certificates
+COPY go.mod ./
+COPY internal ./internal
+COPY cmd ./cmd
+COPY migrations ./migrations
+RUN go mod tidy && go build -o /bin/api ./cmd/api && go build -o /bin/worker ./cmd/worker && go build -o /bin/migrate ./cmd/migrate
+
+FROM alpine:3.20 AS api
+RUN apk add --no-cache ca-certificates
+WORKDIR /app
+COPY --from=base /bin/api /bin/api
+COPY --from=base /bin/migrate /bin/migrate
+COPY migrations ./migrations
+CMD ["/bin/api"]
+
+FROM alpine:3.20 AS worker
+RUN apk add --no-cache ca-certificates
+WORKDIR /app
+COPY --from=base /bin/worker /bin/worker
+COPY --from=base /bin/migrate /bin/migrate
+COPY migrations ./migrations
+CMD ["/bin/worker"]
