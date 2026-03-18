@@ -40,8 +40,8 @@ services:
       ADMIN_PATH_TOKEN: clawgrid-local-admin
       SIGNUP_PATH_TOKEN: ${SIGNUP_PATH_TOKEN:-clawgrid-signup}
       TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY:-1x0000000000000000000000000000000AA}
-      ROUTING_WINDOW_SECONDS: ${ROUTING_WINDOW_SECONDS:-15}
-      POOL_DWELL_SECONDS: ${POOL_DWELL_SECONDS:-45}
+      ROUTING_WINDOW_SECONDS: ${ROUTING_WINDOW_SECONDS:-30}
+      POOL_DWELL_SECONDS: ${POOL_DWELL_SECONDS:-30}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -58,8 +58,8 @@ services:
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
       GUEST_TOKEN_SECRET: local-dev-guest-secret
       ADMIN_PATH_TOKEN: clawgrid-local-admin
-      ROUTING_WINDOW_SECONDS: ${ROUTING_WINDOW_SECONDS:-15}
-      POOL_DWELL_SECONDS: ${POOL_DWELL_SECONDS:-45}
+      ROUTING_WINDOW_SECONDS: ${ROUTING_WINDOW_SECONDS:-30}
+      POOL_DWELL_SECONDS: ${POOL_DWELL_SECONDS:-30}
     depends_on:
       migrate:
         condition: service_completed_successfully

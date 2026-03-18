@@ -13,6 +13,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -448,6 +450,114 @@ func TestJobClaimRejectsSecondClaimForSameResponder(t *testing.T) {
 
 	h.requestJSON(t, http.MethodPost, "/jobs/"+jobA+"/claim", responder.apiKey, nil, http.StatusOK, nil)
 	h.requestJSON(t, http.MethodPost, "/jobs/"+jobB+"/claim", responder.apiKey, nil, http.StatusConflict, nil)
+}
+
+func TestJobClaimAllowsOnlyOneConcurrentClaimForSameResponder(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	responder := h.registerAccount(t, "noah")
+	prompterA := h.registerAccount(t, "tom")
+	prompterB := h.registerAccount(t, "jerry")
+
+	sessionA := h.createSession(t, prompterA.apiKey)
+	jobA := h.postMessage(t, prompterA.apiKey, sessionA, "pool job a")
+	h.execSQL(t, `UPDATE jobs SET status = 'system_pool', last_system_pool_entered_at = now() WHERE id = $1`, jobA)
+
+	sessionB := h.createSession(t, prompterB.apiKey)
+	jobB := h.postMessage(t, prompterB.apiKey, sessionB, "pool job b")
+	h.execSQL(t, `UPDATE jobs SET status = 'system_pool', last_system_pool_entered_at = now() WHERE id = $1`, jobB)
+
+	type claimResult struct {
+		jobID   string
+		status  int
+		body    string
+		err     error
+	}
+
+	client := &http.Client{}
+	start := make(chan struct{})
+	results := make(chan claimResult, 2)
+	var wg sync.WaitGroup
+
+	claim := func(jobID string) {
+		defer wg.Done()
+		<-start
+		req, err := http.NewRequest(http.MethodPost, h.baseURL+"/jobs/"+jobID+"/claim", nil)
+		if err != nil {
+			results <- claimResult{jobID: jobID, err: err}
+			return
+		}
+		req.Header.Set("Authorization", "Bearer "+responder.apiKey)
+		resp, err := client.Do(req)
+		if err != nil {
+			results <- claimResult{jobID: jobID, err: err}
+			return
+		}
+		defer resp.Body.Close()
+		buf := new(bytes.Buffer)
+		_, _ = buf.ReadFrom(resp.Body)
+		results <- claimResult{jobID: jobID, status: resp.StatusCode, body: buf.String()}
+	}
+
+	wg.Add(2)
+	go claim(jobA)
+	go claim(jobB)
+	close(start)
+	wg.Wait()
+	close(results)
+
+	successes := 0
+	conflicts := 0
+	claimedJobID := ""
+	for result := range results {
+		if result.err != nil {
+			t.Fatalf("claim request for %s failed: %v", result.jobID, result.err)
+		}
+		switch result.status {
+		case http.StatusOK:
+			successes++
+			claimedJobID = result.jobID
+		case http.StatusConflict:
+			conflicts++
+			if !strings.Contains(result.body, "responder_busy") {
+				t.Fatalf("conflict body = %q, want responder_busy", result.body)
+			}
+		default:
+			t.Fatalf("unexpected status for %s: %d body=%s", result.jobID, result.status, result.body)
+		}
+	}
+
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("successes=%d conflicts=%d, want 1/1", successes, conflicts)
+	}
+
+	activeClaimCount := h.scalarInt(t, `
+SELECT COUNT(*)::int
+FROM jobs
+WHERE status = 'system_pool'
+  AND response_message_id IS NULL
+  AND claim_owner_type = 'account'
+  AND claim_owner_id = $1
+  AND claim_expires_at > now()`, responder.accountID)
+	if activeClaimCount != 1 {
+		t.Fatalf("active claim count = %d, want 1", activeClaimCount)
+	}
+
+	holdCount := h.scalarInt(t, `
+SELECT COUNT(*)::int
+FROM wallet_ledger
+WHERE owner_type = 'account'
+  AND owner_id = $1
+  AND reason = 'responder_stake_hold'`, responder.accountID)
+	if holdCount != 1 {
+		t.Fatalf("stake hold ledger count = %d, want 1", holdCount)
+	}
+
+	if claimedJobID == "" {
+		t.Fatal("claimedJobID empty, want one successful claim")
+	}
 }
 
 func TestPrompterCannotSendNewMessageWhileFeedbackIsPending(t *testing.T) {
