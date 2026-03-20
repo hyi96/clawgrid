@@ -77,6 +77,9 @@ type AvailableResponder = {
 
 type PoolCandidate = {
   id: string;
+  session_id?: string;
+  session_title?: string;
+  session_snippet?: string;
   pool_started_at?: string;
   pool_ends_at?: string;
   tip_amount: number;
@@ -147,6 +150,7 @@ const RESPOND_STATE_KEY_PREFIX = "clawgrid_respond_active_v1";
 const DISPATCH_JOB_SLOTS = 4;
 const DISPATCH_RESPONDER_SLOTS = 5;
 const ACCOUNT_USERNAME_LIMIT = 40;
+const ACCOUNT_EMAIL_MAX_BYTES = 320;
 const ACCOUNT_PASSWORD_MIN_BYTES = 8;
 const ACCOUNT_PASSWORD_MAX_BYTES = 72;
 
@@ -215,9 +219,13 @@ function clampPercent(v: number): number {
   return Math.max(0, Math.min(100, v));
 }
 
-function secondsRemaining(until?: string): number {
-  if (!until) return 0;
-  return Math.max(0, Math.ceil((new Date(until).getTime() - Date.now()) / 1000));
+function normalizeEmailInput(raw: string): string {
+  return raw.trim().toLowerCase();
+}
+
+function isValidEmailSyntax(email: string): boolean {
+  if (!email || email.length > ACCOUNT_EMAIL_MAX_BYTES) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
 function formatCredits(v: number): string {
@@ -480,17 +488,23 @@ function AskPage({ auth }: { auth: AuthState | null }) {
     setBusy(true);
     setError("");
     setMenuSessionId("");
-    setSessions((prev) => prev.filter((row) => row.id !== sessionID));
-    if (selectedSessionId === sessionID) {
-      setSelectedSessionId("");
-      setMessages([]);
-      setSessionState(null);
-    }
     try {
       await api(`/sessions/${sessionID}`, auth, { method: "DELETE" });
+      if (selectedSessionId === sessionID) {
+        setSelectedSessionId("");
+        setMessages([]);
+        setSessionState(null);
+      }
       await loadSessions();
     } catch (e) {
-      setError((e as Error).message);
+      const message = (e as Error).message;
+      if (message === "session_has_unresolved_jobs") {
+        window.alert("This session cannot be deleted yet because it still has unresolved work or pending feedback. Finish, cancel, or review the active job first.");
+      } else if (message === "session not found") {
+        window.alert("This session no longer exists.");
+      }
+      setError(message);
+      await loadSessions();
     } finally {
       setBusy(false);
     }
@@ -858,10 +872,7 @@ function DispatchPage({ auth }: { auth: AuthState | null }) {
                 }}
               >
                 <p className="dispatch-responder-name">{responder.display_name?.trim() ? responder.display_name : responder.owner_id}</p>
-                <p
-                  className="dispatch-responder-blurb"
-                  title={responder.responder_description?.trim() ? responder.responder_description : "no responder blurb yet"}
-                >
+                <p className="dispatch-responder-blurb">
                   {responder.responder_description?.trim() ? responder.responder_description : "no responder blurb yet"}
                 </p>
                 <p className="dispatch-card-meta">{responder.owner_id}</p>
@@ -877,10 +888,7 @@ function DispatchPage({ auth }: { auth: AuthState | null }) {
       {draggingResponder && dragPos && (
         <div className="dispatch-drag-floating" style={{ left: dragPos.x + 10, top: dragPos.y + 10 }}>
           <p className="dispatch-responder-name">{draggingResponder.display_name?.trim() ? draggingResponder.display_name : draggingResponder.owner_id}</p>
-          <p
-            className="dispatch-responder-blurb"
-            title={draggingResponder.responder_description?.trim() ? draggingResponder.responder_description : "no responder blurb yet"}
-          >
+          <p className="dispatch-responder-blurb">
             {draggingResponder.responder_description?.trim() ? draggingResponder.responder_description : "no responder blurb yet"}
           </p>
         </div>
@@ -1262,17 +1270,16 @@ function RespondPage({ auth }: { auth: AuthState | null }) {
             const ends = candidate.pool_ends_at ? new Date(candidate.pool_ends_at).getTime() : countdownNow;
             const total = Math.max(1, ends - started);
             const elapsed = clampPercent(((countdownNow - started) / total) * 100);
-            const remaining = secondsRemaining(candidate.pool_ends_at);
+            const title = candidate.session_title?.trim() ? candidate.session_title : candidate.session_id ?? candidate.id;
             return (
-            <button className="respond-pool-card" key={candidate.id} onClick={() => void openJob(candidate.id, { claimFirst: true })} disabled={busy}>
-              <span>job id: {candidate.id}</span>
-              <span>time limit: {candidate.time_limit_minutes > 0 ? `${candidate.time_limit_minutes}m` : "-"}</span>
-              {candidate.tip_amount > 0 && <span>bonus tip: {formatCredits(candidate.tip_amount)}</span>}
-              <span>open and reply once</span>
+            <button className="dispatch-card dispatch-job-slot respond-pool-job-card" key={candidate.id} onClick={() => void openJob(candidate.id, { claimFirst: true })} disabled={busy}>
+              <div className="dispatch-card-pill" title={title}>{title}</div>
+              <p className="dispatch-card-snippet">{candidate.session_snippet?.trim() ? candidate.session_snippet : "no recent messages"}</p>
+              <p className="dispatch-card-meta">time limit: {candidate.time_limit_minutes > 0 ? `${candidate.time_limit_minutes}m` : "-"}</p>
+              {candidate.tip_amount > 0 && <p className="dispatch-card-meta">bonus tip: {formatCredits(candidate.tip_amount)}</p>}
               <div className="dispatch-progress" aria-hidden="true">
                 <div className="dispatch-progress-fill" style={{ width: `${elapsed}%` }} />
               </div>
-              <span>{remaining}s until this offer disappears</span>
             </button>
           );})}
           {!candidates.length && <div className="placeholder-box">no pool jobs available</div>}
@@ -1401,6 +1408,7 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
   const [loginNameInput, setLoginNameInput] = useState("");
   const [loginPasswordInput, setLoginPasswordInput] = useState("");
   const [nameInput, setNameInput] = useState("");
+  const [emailInput, setEmailInput] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
   const [signupTurnstileToken, setSignupTurnstileToken] = useState("");
   const [signupTurnstileResetNonce, setSignupTurnstileResetNonce] = useState(0);
@@ -1408,6 +1416,7 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
   const [signupBusy, setSignupBusy] = useState(false);
   const [accountName, setAccountName] = useState("-");
   const [accountID, setAccountID] = useState("-");
+  const [accountEmail, setAccountEmail] = useState("");
   const [wallet, setWallet] = useState<WalletInfo | null>(null);
   const [keys, setKeys] = useState<ApiKeyItem[]>([]);
   const [stats, setStats] = useState<AccountStats | null>(null);
@@ -1436,13 +1445,14 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
     if (!auth || auth.mode !== "account") return;
     try {
       const [me, walletData, keyData, statsData] = await Promise.all([
-        api<{ id: string; name: string; responder_description?: string }>("/account/me", auth),
+        api<{ id: string; name: string; email?: string; responder_description?: string }>("/account/me", auth),
         api<WalletInfo>("/wallets/current", auth),
         api<{ items: ApiKeyItem[] }>("/account/api-keys", auth),
         api<AccountStats>("/account/stats", auth),
       ]);
       setAccountID(me.id);
       setAccountName(me.name);
+      setAccountEmail(me.email ?? "");
       setResponderDescription(me.responder_description ?? "");
       setWallet(walletData);
       setKeys(keyData.items);
@@ -1462,12 +1472,18 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
     try {
       const data = await api<{ account_id: string; api_key: string; session_token: string }>(ACCOUNT_REGISTER_PATH, null, {
         method: "POST",
-        body: JSON.stringify({ name: nameInput, password: passwordInput, turnstile_token: turnstileToken }),
+        body: JSON.stringify({
+          name: nameInput,
+          email: normalizeEmailInput(emailInput),
+          password: passwordInput,
+          turnstile_token: turnstileToken,
+        }),
       });
       const next: AccountAuth = { mode: "account", token: data.session_token };
       saveAuth(next);
       setAuth(next);
       setNameInput("");
+      setEmailInput("");
       setPasswordInput("");
       setSignupTurnstileToken("");
       setSignupModalOpen(false);
@@ -1490,6 +1506,15 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
     }
     if (Array.from(trimmedName).length > ACCOUNT_USERNAME_LIMIT) {
       setError("name_too_long");
+      return;
+    }
+    const normalizedEmail = normalizeEmailInput(emailInput);
+    if (!normalizedEmail) {
+      setError("email_required");
+      return;
+    }
+    if (!isValidEmailSyntax(normalizedEmail)) {
+      setError("invalid_email");
       return;
     }
     if (passwordInput.length < ACCOUNT_PASSWORD_MIN_BYTES) {
@@ -1613,6 +1638,12 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
               />
               <input
                 className="account-description"
+                value={emailInput}
+                onChange={(e) => setEmailInput(e.target.value)}
+                placeholder="email"
+              />
+              <input
+                className="account-description"
                 type="password"
                 value={passwordInput}
                 onChange={(e) => setPasswordInput(e.target.value)}
@@ -1693,6 +1724,7 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
         <div>
           <h2 className="account-title">account overview: {accountName}</h2>
           <p className="account-muted">account id: {accountID}</p>
+          {accountEmail && <p className="account-muted">email: {accountEmail}</p>}
         </div>
         <button
           className="account-btn small"

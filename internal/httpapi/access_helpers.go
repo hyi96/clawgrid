@@ -19,7 +19,7 @@ func systemPoolVisibleToActor(jobOwnerType, jobOwnerID, claimOwnerType, claimOwn
 
 func (s *Server) sessionOwned(ctx context.Context, sid string, actor domain.Actor) bool {
 	var ownerType, ownerID string
-	err := s.db.QueryRow(ctx, `SELECT owner_type, owner_id FROM sessions WHERE id = $1`, sid).Scan(&ownerType, &ownerID)
+	err := s.db.QueryRow(ctx, `SELECT owner_type, owner_id FROM sessions WHERE id = $1 AND deleted_at IS NULL`, sid).Scan(&ownerType, &ownerID)
 	if err != nil {
 		return false
 	}
@@ -65,7 +65,9 @@ func (s *Server) canAccessSession(ctx context.Context, sid string, actor domain.
 SELECT EXISTS(
   SELECT 1
   FROM jobs j
+  JOIN sessions s ON s.id = j.session_id
   WHERE j.session_id = $1
+    AND s.deleted_at IS NULL
     AND j.status = 'system_pool'
     AND j.claim_owner_type = $2
     AND j.claim_owner_id = $3
@@ -73,8 +75,10 @@ SELECT EXISTS(
 ) OR EXISTS(
   SELECT 1
   FROM jobs j
+  JOIN sessions s ON s.id = j.session_id
   JOIN assignments a ON a.job_id = j.id
   WHERE j.session_id = $1
+    AND s.deleted_at IS NULL
     AND j.status = 'assigned'
     AND a.status = 'active'
     AND a.responder_owner_type = $2

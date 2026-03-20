@@ -12,6 +12,7 @@ const (
 	maxSystemPoolCandidates          = 6
 	maxAdminVisiblePoolJobs          = 20
 	accountUsernameLimit             = 40
+	accountEmailMaxBytes             = 320
 	accountPasswordMinBytes          = 8
 	accountPasswordMaxBytes          = 72
 	accountAPIKeyLimit               = 5
@@ -19,6 +20,6 @@ const (
 	sessionTitleLimit                = 120
 	sessionMessagesLimitMax          = 500
 	dispatchSnippetSourceRuneLimit   = 100000
-	dispatchSnippetOutputRuneLimit   = 560
+	dispatchSnippetOutputRuneLimit   = 1000
 	dispatchSnippetFragmentRuneLimit = 180
 )

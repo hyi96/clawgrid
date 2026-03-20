@@ -221,19 +221,22 @@ func (s *Server) handleResponderWork(w http.ResponseWriter, r *http.Request, act
 	bandSize := dispatchBandSize(activeResponders, maxSystemPoolCandidates, systemPoolBandBase)
 
 	rows, qerr := s.db.Query(ctx, `
-SELECT id,
-       created_at,
-       routing_cycle_count,
-       last_system_pool_entered_at,
-       last_system_pool_entered_at + make_interval(secs => $3::int) AS pool_ends_at,
-       tip_amount,
-       COALESCE(NULLIF(metadata_json->>'time_limit_minutes', '')::int, 0) AS time_limit_minutes
+SELECT jobs.id,
+       jobs.session_id,
+       COALESCE(sess.title, ''),
+       jobs.created_at,
+       jobs.routing_cycle_count,
+       jobs.last_system_pool_entered_at,
+       jobs.last_system_pool_entered_at + make_interval(secs => $3::int) AS pool_ends_at,
+       jobs.tip_amount,
+       COALESCE(NULLIF(jobs.metadata_json->>'time_limit_minutes', '')::int, 0) AS time_limit_minutes
 FROM jobs
-	WHERE status = 'system_pool'
-	  AND response_message_id IS NULL
-	  AND (claim_expires_at IS NULL OR claim_expires_at <= now())
-	  AND NOT (owner_type = $1 AND owner_id = $2)
-	ORDER BY routing_cycle_count DESC, tip_amount DESC, created_at ASC
+JOIN sessions sess ON sess.id = jobs.session_id
+	WHERE jobs.status = 'system_pool'
+	  AND jobs.response_message_id IS NULL
+	  AND (jobs.claim_expires_at IS NULL OR jobs.claim_expires_at <= now())
+	  AND NOT (jobs.owner_type = $1 AND jobs.owner_id = $2)
+	ORDER BY jobs.routing_cycle_count DESC, jobs.tip_amount DESC, jobs.created_at ASC
 	LIMIT $4`, string(actor.OwnerType), actor.OwnerID, int(s.cfg.PoolDwellWindow.Seconds()), bandSize)
 	if qerr != nil {
 		respondErr(w, http.StatusInternalServerError, qerr.Error())
@@ -243,7 +246,7 @@ FROM jobs
 	candidateRows := []poolJobRow{}
 	for rows.Next() {
 		var row poolJobRow
-		_ = rows.Scan(&row.id, &row.createdAt, &row.cycles, &row.enteredAt, &row.endsAt, &row.tipAmount, &row.timeLimitMinutes)
+		_ = rows.Scan(&row.id, &row.sessionID, &row.sessionTitle, &row.createdAt, &row.cycles, &row.enteredAt, &row.endsAt, &row.tipAmount, &row.timeLimitMinutes)
 		candidateRows = append(candidateRows, row)
 	}
 	shufflePoolJobsForResponder(candidateRows, actor, time.Now())
@@ -253,8 +256,16 @@ FROM jobs
 
 	candidates := []map[string]any{}
 	for _, row := range candidateRows {
+		sessionSnippet, err := s.buildDispatchSessionSnippet(ctx, row.sessionID)
+		if err != nil {
+			respondErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		candidates = append(candidates, map[string]any{
 			"id":                 row.id,
+			"session_id":         row.sessionID,
+			"session_title":      row.sessionTitle,
+			"session_snippet":    sessionSnippet,
 			"pool_started_at":    row.enteredAt,
 			"pool_ends_at":       row.endsAt,
 			"tip_amount":         row.tipAmount,

@@ -15,6 +15,10 @@ import (
 
 func (s *Server) handleAccountRegister(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	if s.cfg.FrontendOrigin != "" && strings.TrimSpace(r.Header.Get("Origin")) != s.cfg.FrontendOrigin {
+		respondErr(w, http.StatusForbidden, "signup_frontend_only")
+		return
+	}
 	var body struct {
 		Name           string `json:"name"`
 		Email          string `json:"email"`
@@ -26,9 +30,18 @@ func (s *Server) handleAccountRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := strings.TrimSpace(body.Name)
+	email := normalizeEmail(body.Email)
 	password := body.Password
 	if name == "" {
 		respondErr(w, http.StatusBadRequest, "name_required")
+		return
+	}
+	if email == "" {
+		respondErr(w, http.StatusBadRequest, "email_required")
+		return
+	}
+	if !isValidEmailSyntax(email) {
+		respondErr(w, http.StatusBadRequest, "invalid_email")
 		return
 	}
 	if utf8.RuneCountInString(name) > accountUsernameLimit {
@@ -57,9 +70,13 @@ func (s *Server) handleAccountRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	accountID := domain.NewID("acct")
-	if _, err := s.db.Exec(ctx, `INSERT INTO accounts(id, name, email, password_hash) VALUES ($1,$2,$3,$4)`, accountID, name, body.Email, passwordHash); err != nil {
+	if _, err := s.db.Exec(ctx, `INSERT INTO accounts(id, name, email, password_hash) VALUES ($1,$2,$3,$4)`, accountID, name, email, passwordHash); err != nil {
 		if isAccountsNameUniqueViolation(err) {
 			respondErr(w, http.StatusConflict, "username_taken")
+			return
+		}
+		if isAccountsEmailUniqueViolation(err) {
+			respondErr(w, http.StatusConflict, "email_taken")
 			return
 		}
 		respondErr(w, http.StatusInternalServerError, err.Error())
@@ -263,6 +280,14 @@ func isAccountsNameUniqueViolation(err error) bool {
 		return false
 	}
 	return pgErr.Code == "23505" && pgErr.ConstraintName == "accounts_name_lower_unique"
+}
+
+func isAccountsEmailUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	return pgErr.Code == "23505" && pgErr.ConstraintName == "accounts_email_lower_unique"
 }
 
 func (s *Server) handleAPIKeysList(w http.ResponseWriter, r *http.Request, actor domain.Actor) {

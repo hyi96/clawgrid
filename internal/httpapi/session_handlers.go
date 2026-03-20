@@ -41,14 +41,13 @@ func (s *Server) handleSessionState(w http.ResponseWriter, r *http.Request, acto
 		return
 	}
 	sid := r.PathValue("id")
-	if !s.sessionOwned(r.Context(), sid, actor) {
-		respondErr(w, http.StatusForbidden, "forbidden")
+	var ownerType, ownerID, title string
+	if err := s.db.QueryRow(r.Context(), `SELECT owner_type, owner_id, COALESCE(title, '') FROM sessions WHERE id = $1 AND deleted_at IS NULL`, sid).Scan(&ownerType, &ownerID, &title); err != nil {
+		respondErr(w, http.StatusNotFound, "session not found")
 		return
 	}
-
-	var title string
-	if err := s.db.QueryRow(r.Context(), `SELECT COALESCE(title, '') FROM sessions WHERE id = $1`, sid).Scan(&title); err != nil {
-		respondErr(w, http.StatusNotFound, "session not found")
+	if ownerType != string(actor.OwnerType) || ownerID != actor.OwnerID {
+		respondErr(w, http.StatusForbidden, "forbidden")
 		return
 	}
 
@@ -67,7 +66,7 @@ func (s *Server) handleSessionsList(w http.ResponseWriter, r *http.Request, acto
 SELECT s.id, s.created_at, COALESCE(MAX(m.created_at), s.created_at) AS updated_at, COUNT(m.id)::int, COALESCE(s.title, '')
 FROM sessions s
 LEFT JOIN messages m ON m.session_id = s.id
-WHERE s.owner_type = $1 AND s.owner_id = $2
+WHERE s.owner_type = $1 AND s.owner_id = $2 AND s.deleted_at IS NULL
 GROUP BY s.id, s.created_at, s.title
 ORDER BY updated_at DESC
 LIMIT 100`, string(actor.OwnerType), actor.OwnerID)
@@ -102,7 +101,7 @@ func (s *Server) handleSessionsGet(w http.ResponseWriter, r *http.Request, actor
 SELECT s.owner_type, s.owner_id, s.created_at, COALESCE(s.title, ''), COUNT(m.id)::int
 FROM sessions s
 LEFT JOIN messages m ON m.session_id = s.id
-WHERE s.id = $1
+WHERE s.id = $1 AND s.deleted_at IS NULL
 GROUP BY s.id, s.owner_type, s.owner_id, s.created_at, s.title`, id).Scan(&ownerType, &ownerID, &created, &title, &numMessages)
 	if err != nil {
 		respondErr(w, http.StatusNotFound, "session not found")
@@ -129,7 +128,7 @@ func (s *Server) handleSessionsPatch(w http.ResponseWriter, r *http.Request, act
 		respondErr(w, http.StatusBadRequest, "title_too_long")
 		return
 	}
-	res, err := s.db.Exec(r.Context(), `UPDATE sessions SET title = $1 WHERE id = $2 AND owner_type = $3 AND owner_id = $4`, title, id, string(actor.OwnerType), actor.OwnerID)
+	res, err := s.db.Exec(r.Context(), `UPDATE sessions SET title = $1 WHERE id = $2 AND owner_type = $3 AND owner_id = $4 AND deleted_at IS NULL`, title, id, string(actor.OwnerType), actor.OwnerID)
 	if err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -156,7 +155,7 @@ WHERE session_id = $1
 		respondErr(w, http.StatusConflict, "session_has_unresolved_jobs")
 		return
 	}
-	res, err := s.db.Exec(r.Context(), `DELETE FROM sessions WHERE id = $1 AND owner_type = $2 AND owner_id = $3`, id, string(actor.OwnerType), actor.OwnerID)
+	res, err := s.db.Exec(r.Context(), `UPDATE sessions SET deleted_at = now() WHERE id = $1 AND owner_type = $2 AND owner_id = $3 AND deleted_at IS NULL`, id, string(actor.OwnerType), actor.OwnerID)
 	if err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return

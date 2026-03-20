@@ -32,6 +32,8 @@ type availableResponderRow struct {
 
 type poolJobRow struct {
 	id               string
+	sessionID        string
+	sessionTitle     string
 	tipAmount        float64
 	timeLimitMinutes int
 	cycles           int

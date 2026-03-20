@@ -21,18 +21,22 @@ func buildSessionSnippetFromNewestFirst(messages []dispatchSnippetMessage) strin
 	usedRunes := 0
 	truncatedOlderContext := false
 	for _, message := range messages {
-		fragment := clipSnippetFragment(dispatchSnippetLine(message), dispatchSnippetFragmentRuneLimit)
+		line := dispatchSnippetLine(message)
+		if line == "" {
+			continue
+		}
+		fragment := clipSnippetFragment(line, dispatchSnippetFragmentRuneLimit)
 		if fragment == "" {
 			continue
 		}
 		extra := utf8.RuneCountInString(fragment)
 		if len(fragments) > 0 {
-			extra += 5
+			extra += 1
 		}
 		if usedRunes+extra > dispatchSnippetOutputRuneLimit {
 			remaining := dispatchSnippetOutputRuneLimit - usedRunes
 			if len(fragments) > 0 {
-				remaining -= 5
+				remaining -= 1
 			}
 			if remaining <= 0 {
 				truncatedOlderContext = true
@@ -45,7 +49,7 @@ func buildSessionSnippetFromNewestFirst(messages []dispatchSnippetMessage) strin
 			}
 			extra = utf8.RuneCountInString(fragment)
 			if len(fragments) > 0 {
-				extra += 5
+				extra += 1
 			}
 		}
 		fragments = append(fragments, fragment)
@@ -59,11 +63,10 @@ func buildSessionSnippetFromNewestFirst(messages []dispatchSnippetMessage) strin
 		return "no messages yet"
 	}
 	reverseStrings(fragments)
-	snippet := strings.Join(fragments, " | ")
 	if len(messages) > len(fragments) || truncatedOlderContext {
-		return "... " + snippet
+		fragments[0] = "... " + fragments[0]
 	}
-	return snippet
+	return strings.Join(fragments, "|")
 }
 
 func normalizeSnippetText(s string) string {
@@ -72,9 +75,9 @@ func normalizeSnippetText(s string) string {
 
 func dispatchSnippetRolePrefix(message dispatchSnippetMessage) string {
 	if message.Role == "responder" {
-		return "reply"
+		return "responder"
 	}
-	return "user"
+	return "prompter"
 }
 
 func dispatchSnippetLine(message dispatchSnippetMessage) string {

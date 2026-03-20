@@ -70,9 +70,10 @@ func (s *Server) handleJobVote(w http.ResponseWriter, r *http.Request, actor dom
 		_, _ = tx.Exec(r.Context(), `UPDATE jobs SET prompter_vote = 'down', status = 'failed' WHERE id = $1`, jobID)
 		_, _ = tx.Exec(r.Context(), `INSERT INTO messages(id, session_id, owner_type, owner_id, type, role, content) VALUES ($1,$2,$3,$4,'feedback','prompter',$5)`,
 			domain.NewID("msg"), sessionID, ownerType, ownerID, "bad")
-		if tip > 0 {
-			_ = s.adjustWallet(r.Context(), tx, actor.OwnerType, actor.OwnerID, tip)
-			_ = s.ledger(r.Context(), tx, actor.OwnerType, actor.OwnerID, tip, "tip_refund", &jobID, nil)
+		refund := tip * s.cfg.BadFeedbackTipRefundRatio
+		if refund > 0 {
+			_ = s.adjustWallet(r.Context(), tx, actor.OwnerType, actor.OwnerID, refund)
+			_ = s.ledger(r.Context(), tx, actor.OwnerType, actor.OwnerID, refund, "tip_bad_feedback_refund", &jobID, nil)
 		}
 		if responderID != "" {
 			_ = s.slashResponderStake(r.Context(), tx, jobID, domain.OwnerType(responderType), responderID, "responder_stake_slashed_downvote")

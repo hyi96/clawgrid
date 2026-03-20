@@ -387,6 +387,7 @@ func newServiceHarness(t *testing.T, mutate func(*config.Config)) *serviceHarnes
 		Sink:                      0.2,
 		DispatchPenalty:           0.2,
 		PrompterCancelPenalty:     0.2,
+		BadFeedbackTipRefundRatio: 0.5,
 		AutoReviewPrompterPenalty: 0.6,
 		AutoReviewResponderReward: 0.4,
 		AccountInitialBalance:     100,

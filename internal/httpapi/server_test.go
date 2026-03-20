@@ -203,8 +203,8 @@ func TestBuildSessionSnippetFromNewestFirst(t *testing.T) {
 	})
 
 	wantParts := []string{
-		"user: latest prompt",
-		"reply: latest reply",
+		"prompter: latest prompt",
+		"responder: latest reply",
 	}
 	for _, want := range wantParts {
 		if !strings.Contains(got, want) {

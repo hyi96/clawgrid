@@ -803,6 +803,73 @@ func TestGuestSessionEndpointUnavailable(t *testing.T) {
 	h.rawRequest(t, &http.Client{}, http.MethodPost, "/guest/sessions", nil, nil, http.StatusNotFound)
 }
 
+func TestSessionDeleteSoftDeletesWithoutRemovingHistory(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	dispatcher := h.registerAccount(t, "dora")
+
+	now := time.Now().UTC()
+	sessionID := domain.NewID("ses")
+	requestMessageID := domain.NewID("msg")
+	responseMessageID := domain.NewID("msg")
+	jobID := domain.NewID("job")
+	assignmentID := domain.NewID("asn")
+
+	h.execSQL(t, `INSERT INTO sessions(id, owner_type, owner_id, status, title, created_at) VALUES ($1, 'account', $2, 'active', 'history', $3)`,
+		sessionID, prompter.accountID, now.Add(-2*time.Hour))
+	h.execSQL(t, `INSERT INTO messages(id, session_id, owner_type, owner_id, type, role, content, created_at) VALUES ($1, $2, 'account', $3, 'text', 'prompter', 'prompt', $4)`,
+		requestMessageID, sessionID, prompter.accountID, now.Add(-2*time.Hour))
+	h.execSQL(t, `INSERT INTO messages(id, session_id, owner_type, owner_id, type, role, content, created_at) VALUES ($1, $2, 'account', $3, 'text', 'responder', 'reply', $4)`,
+		responseMessageID, sessionID, responder.accountID, now.Add(-90*time.Minute))
+	h.execSQL(t, `
+INSERT INTO jobs(
+  id, session_id, request_message_id, owner_type, owner_id, status,
+  created_at, activated_at, routing_ends_at, response_message_id,
+  tip_amount, post_fee_amount, prompter_vote, review_deadline_at
+)
+VALUES ($1,$2,$3,'account',$4,'completed',$5,$5,$5,$6,0,2,'up',$7)`,
+		jobID, sessionID, requestMessageID, prompter.accountID, now.Add(-2*time.Hour), responseMessageID, now.Add(-80*time.Minute))
+	h.execSQL(t, `INSERT INTO assignments(id, job_id, dispatcher_owner_type, dispatcher_owner_id, responder_owner_type, responder_owner_id, assigned_at, deadline_at, status) VALUES ($1,$2,'account',$3,'account',$4,$5,$6,'success')`,
+		assignmentID, jobID, dispatcher.accountID, responder.accountID, now.Add(-100*time.Minute), now.Add(-95*time.Minute))
+
+	messagesBefore := h.scalarInt(t, `SELECT COUNT(*)::int FROM messages WHERE session_id = $1`, sessionID)
+	jobsBefore := h.scalarInt(t, `SELECT COUNT(*)::int FROM jobs WHERE session_id = $1`, sessionID)
+	assignmentsBefore := h.scalarInt(t, `SELECT COUNT(*)::int FROM assignments WHERE job_id = $1`, jobID)
+
+	h.requestJSON(t, http.MethodDelete, "/sessions/"+sessionID, prompter.apiKey, nil, http.StatusOK, nil)
+
+	if deletedCount := h.scalarInt(t, `SELECT COUNT(*)::int FROM sessions WHERE id = $1 AND deleted_at IS NOT NULL`, sessionID); deletedCount != 1 {
+		t.Fatalf("deleted session count = %d, want 1", deletedCount)
+	}
+	if messagesAfter := h.scalarInt(t, `SELECT COUNT(*)::int FROM messages WHERE session_id = $1`, sessionID); messagesAfter != messagesBefore {
+		t.Fatalf("messages after delete = %d, want %d", messagesAfter, messagesBefore)
+	}
+	if jobsAfter := h.scalarInt(t, `SELECT COUNT(*)::int FROM jobs WHERE session_id = $1`, sessionID); jobsAfter != jobsBefore {
+		t.Fatalf("jobs after delete = %d, want %d", jobsAfter, jobsBefore)
+	}
+	if assignmentsAfter := h.scalarInt(t, `SELECT COUNT(*)::int FROM assignments WHERE job_id = $1`, jobID); assignmentsAfter != assignmentsBefore {
+		t.Fatalf("assignments after delete = %d, want %d", assignmentsAfter, assignmentsBefore)
+	}
+
+	h.requestJSON(t, http.MethodGet, "/sessions/"+sessionID, prompter.apiKey, nil, http.StatusNotFound, nil)
+
+	var listed struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	h.requestJSON(t, http.MethodGet, "/sessions", prompter.apiKey, nil, http.StatusOK, &listed)
+	for _, item := range listed.Items {
+		if item.ID == sessionID {
+			t.Fatal("soft-deleted session was still listed")
+		}
+	}
+}
+
 func TestAccountRegisterRequiresUniqueUsernameAndSeparatesPasswordLoginFromAPIKeys(t *testing.T) {
 	t.Parallel()
 
@@ -813,13 +880,19 @@ func TestAccountRegisterRequiresUniqueUsernameAndSeparatesPasswordLoginFromAPIKe
 		APIKey       string `json:"api_key"`
 		SessionToken string `json:"session_token"`
 	}
-	h.requestJSON(t, http.MethodPost, testAccountRegisterPath, "", map[string]any{
+	h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterPath, "", map[string]string{
+		"Origin": h.app.cfg.FrontendOrigin,
+	}, map[string]any{
 		"name":     "tom",
+		"email":    "tom@example.com",
 		"password": "password123",
 	}, http.StatusCreated, &created)
 
-	h.requestJSON(t, http.MethodPost, testAccountRegisterPath, "", map[string]any{
+	h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterPath, "", map[string]string{
+		"Origin": h.app.cfg.FrontendOrigin,
+	}, map[string]any{
 		"name":     "Tom",
+		"email":    "tom-2@example.com",
 		"password": "password123",
 	}, http.StatusConflict, nil)
 
@@ -847,8 +920,9 @@ func TestAccountRegisterRequiresUniqueUsernameAndSeparatesPasswordLoginFromAPIKe
 	}
 
 	var me struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
+		ID    string `json:"id"`
+		Name  string `json:"name"`
+		Email string `json:"email"`
 	}
 	h.requestJSON(t, http.MethodGet, "/account/me", loggedIn.SessionToken, nil, http.StatusOK, &me)
 	if me.ID != created.AccountID {
@@ -856,6 +930,9 @@ func TestAccountRegisterRequiresUniqueUsernameAndSeparatesPasswordLoginFromAPIKe
 	}
 	if me.Name != "tom" {
 		t.Fatalf("me.name = %q, want %q", me.Name, "tom")
+	}
+	if me.Email != "tom@example.com" {
+		t.Fatalf("me.email = %q, want %q", me.Email, "tom@example.com")
 	}
 
 	var meByAPIKey struct {
@@ -880,6 +957,48 @@ func TestAccountRegisterRequiresUniqueUsernameAndSeparatesPasswordLoginFromAPIKe
 	}
 }
 
+func TestAccountRegisterRequiresFrontendOrigin(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	h.requestJSON(t, http.MethodPost, testAccountRegisterPath, "", map[string]any{
+		"name":     "tom",
+		"email":    "tom@example.com",
+		"password": "password123",
+	}, http.StatusForbidden, nil)
+}
+
+func TestAccountRegisterRequiresValidUniqueEmail(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterPath, "", map[string]string{
+		"Origin": h.app.cfg.FrontendOrigin,
+	}, map[string]any{
+		"name":     "tom",
+		"email":    "not-an-email",
+		"password": "password123",
+	}, http.StatusBadRequest, nil)
+
+	h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterPath, "", map[string]string{
+		"Origin": h.app.cfg.FrontendOrigin,
+	}, map[string]any{
+		"name":     "tom",
+		"email":    "tom@example.com",
+		"password": "password123",
+	}, http.StatusCreated, nil)
+
+	h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterPath, "", map[string]string{
+		"Origin": h.app.cfg.FrontendOrigin,
+	}, map[string]any{
+		"name":     "tom-2",
+		"email":    "TOM@example.com",
+		"password": "password123",
+	}, http.StatusConflict, nil)
+}
+
 func TestAccountRegisterRequiresTurnstileWhenConfigured(t *testing.T) {
 	t.Parallel()
 
@@ -893,16 +1012,22 @@ func TestAccountRegisterRequiresTurnstileWhenConfigured(t *testing.T) {
 		return errors.New("invalid_turnstile")
 	}
 
-	h.requestJSON(t, http.MethodPost, testAccountRegisterPath, "", map[string]any{
+	h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterPath, "", map[string]string{
+		"Origin": h.app.cfg.FrontendOrigin,
+	}, map[string]any{
 		"name":     "tom",
+		"email":    "tom@example.com",
 		"password": "password123",
 	}, http.StatusBadRequest, nil)
 
 	var created struct {
 		AccountID string `json:"account_id"`
 	}
-	h.requestJSON(t, http.MethodPost, testAccountRegisterPath, "", map[string]any{
+	h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterPath, "", map[string]string{
+		"Origin": h.app.cfg.FrontendOrigin,
+	}, map[string]any{
 		"name":            "tom",
+		"email":           "tom@example.com",
 		"password":        "password123",
 		"turnstile_token": "good-token",
 	}, http.StatusCreated, &created)
@@ -921,8 +1046,11 @@ func TestAccountLogoutRevokesSessionButLeavesAPIKeyUsable(t *testing.T) {
 		APIKey       string `json:"api_key"`
 		SessionToken string `json:"session_token"`
 	}
-	h.requestJSON(t, http.MethodPost, testAccountRegisterPath, "", map[string]any{
+	h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterPath, "", map[string]string{
+		"Origin": h.app.cfg.FrontendOrigin,
+	}, map[string]any{
 		"name":     "tom",
+		"email":    "tom@example.com",
 		"password": "password123",
 	}, http.StatusCreated, &created)
 
@@ -1103,6 +1231,8 @@ func TestRoutingAndPoolExposeTimeLimitAndBonusTip(t *testing.T) {
 		Mode       string `json:"mode"`
 		Candidates []struct {
 			ID               string  `json:"id"`
+			SessionTitle     string  `json:"session_title"`
+			SessionSnippet   string  `json:"session_snippet"`
 			TimeLimitMinutes int     `json:"time_limit_minutes"`
 			TipAmount        float64 `json:"tip_amount"`
 		} `json:"candidates"`
@@ -1119,6 +1249,12 @@ func TestRoutingAndPoolExposeTimeLimitAndBonusTip(t *testing.T) {
 	}
 	if work.Candidates[0].TipAmount != 1.5 {
 		t.Fatalf("pool tip_amount = %v, want 1.5", work.Candidates[0].TipAmount)
+	}
+	if work.Candidates[0].SessionTitle != "incident thread" {
+		t.Fatalf("pool session_title = %q, want %q", work.Candidates[0].SessionTitle, "incident thread")
+	}
+	if work.Candidates[0].SessionSnippet == "" {
+		t.Fatal("pool session_snippet was empty")
 	}
 }
 
@@ -1182,7 +1318,15 @@ func TestPoolClaimReplyDownvoteSlashesStake(t *testing.T) {
 	prompter := h.registerAccount(t, "tom")
 	responder := h.registerAccount(t, "noah")
 	sessionID := h.createSession(t, prompter.apiKey)
-	jobID := h.postMessage(t, prompter.apiKey, sessionID, "say something bad")
+	var created struct {
+		JobID string `json:"job_id"`
+	}
+	h.requestJSON(t, http.MethodPost, "/sessions/"+sessionID+"/messages", prompter.apiKey, map[string]any{
+		"content":            "say something bad",
+		"time_limit_minutes": 5,
+		"tip_amount":         2.0,
+	}, http.StatusCreated, &created)
+	jobID := created.JobID
 
 	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
 
@@ -1203,6 +1347,17 @@ func TestPoolClaimReplyDownvoteSlashesStake(t *testing.T) {
 
 	if got := h.walletBalance(t, responder.apiKey); got != 99.4 {
 		t.Fatalf("responder balance = %v, want %v", got, 99.4)
+	}
+	if got := h.walletBalance(t, prompter.apiKey); got != 97.0 {
+		t.Fatalf("prompter balance = %v, want %v", got, 97.0)
+	}
+	if got := h.scalarInt(t, `
+SELECT COUNT(*)::int
+FROM wallet_ledger
+WHERE owner_type = 'account'
+  AND owner_id = $1
+  AND reason = 'tip_bad_feedback_refund'`, prompter.accountID); got != 1 {
+		t.Fatalf("bad-feedback tip refund ledger count = %d, want 1", got)
 	}
 }
 
@@ -1714,6 +1869,7 @@ func newIntegrationHarnessWithConfig(t *testing.T, mutate func(*config.Config)) 
 		Sink:                      0.2,
 		DispatchPenalty:           0.2,
 		PrompterCancelPenalty:     0.2,
+		BadFeedbackTipRefundRatio: 0.5,
 		AutoReviewPrompterPenalty: 0.6,
 		AutoReviewResponderReward: 0.4,
 		AccountInitialBalance:     100,
@@ -1774,7 +1930,14 @@ func (h *integrationHarness) registerAccount(t *testing.T, name string) testAcco
 		AccountID string `json:"account_id"`
 		APIKey    string `json:"api_key"`
 	}
-	h.requestJSON(t, http.MethodPost, testAccountRegisterPath, "", map[string]any{"name": name, "password": "password123"}, http.StatusCreated, &out)
+	emailLocal := strings.ToLower(strings.ReplaceAll(domain.NewID("acct"), "_", "-"))
+	h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterPath, "", map[string]string{
+		"Origin": h.app.cfg.FrontendOrigin,
+	}, map[string]any{
+		"name":     name,
+		"email":    name + "+" + emailLocal + "@example.com",
+		"password": "password123",
+	}, http.StatusCreated, &out)
 	return testAccount{accountID: out.AccountID, apiKey: out.APIKey}
 }
 
@@ -1834,6 +1997,11 @@ INSERT INTO assignments(
 
 func (h *integrationHarness) requestJSON(t *testing.T, method, path, apiKey string, body any, wantStatus int, out any) {
 	t.Helper()
+	h.requestJSONWithHeaders(t, method, path, apiKey, nil, body, wantStatus, out)
+}
+
+func (h *integrationHarness) requestJSONWithHeaders(t *testing.T, method, path, apiKey string, headers map[string]string, body any, wantStatus int, out any) {
+	t.Helper()
 
 	var payload []byte
 	if body != nil {
@@ -1850,6 +2018,9 @@ func (h *integrationHarness) requestJSON(t *testing.T, method, path, apiKey stri
 	}
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 
 	rec := httptest.NewRecorder()
