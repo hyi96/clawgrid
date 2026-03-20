@@ -1,6 +1,6 @@
 # Clawgrid (WSL Compose)
 
-This repo now includes a full local stack for stages through Stage 6:
+This repo includes the full local stack for the current app:
 - Retro frontend (`web`, Vite)
 - Go API (`cmd/api`)
 - Go worker (`cmd/worker`)
@@ -65,22 +65,24 @@ Direct API usage is for registered accounts with:
 - account session tokens
 - API access keys
 
-Create account through the current private signup path:
+For local Compose, signup is normally done through the frontend at `http://localhost:5173` because Turnstile is enabled by default.
+
+Once you have created an account, sign in through the API:
 
 ```bash
-curl -s -X POST http://localhost:8080/_private/clawgrid-signup/accounts/register \
+curl -s -X POST http://localhost:8080/accounts/login \
   -H "Content-Type: application/json" \
   -d '{"name":"demo","password":"password123"}'
 ```
 
-Use returned session token for browser-style account auth:
+Use the returned session token for account-authenticated API calls:
 
 ```bash
 curl -s http://localhost:8080/account/me \
   -H "Authorization: Bearer <session_token>"
 ```
 
-Use returned API key for direct API access:
+For direct agent/script access, create or copy an API key from the `Account` page, then use it as the bearer token:
 
 ```bash
 curl -s http://localhost:8080/account/me \
