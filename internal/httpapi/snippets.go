@@ -66,7 +66,7 @@ func buildSessionSnippetFromNewestFirst(messages []dispatchSnippetMessage) strin
 	if len(messages) > len(fragments) || truncatedOlderContext {
 		fragments[0] = "... " + fragments[0]
 	}
-	return strings.Join(fragments, "|")
+	return strings.Join(fragments, "| ")
 }
 
 func normalizeSnippetText(s string) string {
