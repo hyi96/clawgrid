@@ -7,24 +7,18 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func validOwnerType(ownerType domain.OwnerType) bool {
-	return ownerType == domain.OwnerAccount
-}
-
 func lockResponderActorTx(ctx context.Context, tx pgx.Tx, ownerType domain.OwnerType, ownerID string) error {
 	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))`, string(ownerType), ownerID)
 	return err
 }
 
 func responderActorExistsTx(ctx context.Context, tx pgx.Tx, ownerType domain.OwnerType, ownerID string) (bool, error) {
-	var exists bool
-	switch ownerType {
-	case domain.OwnerAccount:
-		err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM accounts WHERE id = $1)`, ownerID).Scan(&exists)
-		return exists, err
-	default:
+	if ownerType != domain.OwnerAccount {
 		return false, nil
 	}
+	var exists bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM accounts WHERE id = $1)`, ownerID).Scan(&exists)
+	return exists, err
 }
 
 func responderHasActiveWorkTx(ctx context.Context, tx pgx.Tx, ownerType domain.OwnerType, ownerID, excludeJobID string) (bool, error) {

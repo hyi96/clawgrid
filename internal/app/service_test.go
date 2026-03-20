@@ -29,7 +29,6 @@ type jobSeed struct {
 	ownerType               string
 	ownerID                 string
 	status                  string
-	expiresAt               time.Time
 	routingEndsAt           time.Time
 	responseMessageID       *string
 	prompterVote            *string
@@ -59,7 +58,6 @@ func TestServiceProcessRoutingExpiry(t *testing.T) {
 		ownerType:        "account",
 		ownerID:          ownerID,
 		status:           "routing",
-		expiresAt:        now.Add(1 * time.Hour),
 		routingEndsAt:    now.Add(-1 * time.Second),
 	})
 	freshJobID := h.insertJob(t, jobSeed{
@@ -68,7 +66,6 @@ func TestServiceProcessRoutingExpiry(t *testing.T) {
 		ownerType:        "account",
 		ownerID:          ownerID,
 		status:           "routing",
-		expiresAt:        now.Add(1 * time.Hour),
 		routingEndsAt:    now.Add(10 * time.Minute),
 	})
 
@@ -108,7 +105,6 @@ func TestServiceProcessPoolRotation(t *testing.T) {
 		ownerType:               "account",
 		ownerID:                 ownerID,
 		status:                  "system_pool",
-		expiresAt:               now.Add(1 * time.Hour),
 		routingEndsAt:           now.Add(1 * time.Hour),
 		lastSystemPoolEnteredAt: ptrTime(now.Add(-31 * time.Second)),
 	})
@@ -121,7 +117,6 @@ func TestServiceProcessPoolRotation(t *testing.T) {
 		ownerType:               "account",
 		ownerID:                 ownerID,
 		status:                  "system_pool",
-		expiresAt:               now.Add(1 * time.Hour),
 		routingEndsAt:           now.Add(1 * time.Hour),
 		lastSystemPoolEnteredAt: ptrTime(now.Add(-31 * time.Second)),
 		claimOwnerType:          &claimOwnerType,
@@ -134,7 +129,6 @@ func TestServiceProcessPoolRotation(t *testing.T) {
 		ownerType:               "account",
 		ownerID:                 ownerID,
 		status:                  "system_pool",
-		expiresAt:               now.Add(10 * time.Second),
 		routingEndsAt:           now.Add(1 * time.Hour),
 		lastSystemPoolEnteredAt: ptrTime(now.Add(-31 * time.Second)),
 	})
@@ -175,7 +169,6 @@ func TestServiceProcessAssignmentTimeouts(t *testing.T) {
 		ownerType:            "account",
 		ownerID:              prompterID,
 		status:               "assigned",
-		expiresAt:            now.Add(1 * time.Hour),
 		routingEndsAt:        now.Add(1 * time.Hour),
 		responderStakeAmount: h.cfg.ResponderStake,
 		responderStakeStatus: "held",
@@ -188,7 +181,6 @@ func TestServiceProcessAssignmentTimeouts(t *testing.T) {
 		ownerType:            "account",
 		ownerID:              prompterID,
 		status:               "assigned",
-		expiresAt:            now.Add(1 * time.Hour),
 		routingEndsAt:        now.Add(1 * time.Hour),
 		responderStakeAmount: h.cfg.ResponderStake,
 		responderStakeStatus: "held",
@@ -201,7 +193,6 @@ func TestServiceProcessAssignmentTimeouts(t *testing.T) {
 		ownerType:               "account",
 		ownerID:                 prompterID,
 		status:                  "system_pool",
-		expiresAt:               now.Add(1 * time.Hour),
 		routingEndsAt:           now.Add(1 * time.Hour),
 		lastSystemPoolEnteredAt: ptrTime(now.Add(-1 * time.Minute)),
 		claimOwnerType:          ptrString("account"),
@@ -245,236 +236,6 @@ func TestServiceProcessAssignmentTimeouts(t *testing.T) {
 	}
 }
 
-func TestServiceProcessExpiryDoesNothing(t *testing.T) {
-	t.Parallel()
-
-	h := newServiceHarness(t, nil)
-	ownerID := h.insertAccount(t, "tom")
-	responderID := h.insertAccount(t, "noah")
-	sessionID := h.insertSession(t, "account", ownerID)
-	requestID := h.insertMessage(t, sessionID, "account", ownerID, "text", "hello")
-	now := time.Now()
-
-	routingID := h.insertJob(t, jobSeed{
-		sessionID:        sessionID,
-		requestMessageID: requestID,
-		ownerType:        "account",
-		ownerID:          ownerID,
-		status:           "routing",
-		expiresAt:        now.Add(-1 * time.Second),
-		routingEndsAt:    now.Add(1 * time.Hour),
-	})
-	assignedID := h.insertJob(t, jobSeed{
-		sessionID:        sessionID,
-		requestMessageID: requestID,
-		ownerType:        "account",
-		ownerID:          ownerID,
-		status:           "assigned",
-		expiresAt:        now.Add(-1 * time.Second),
-		routingEndsAt:    now.Add(1 * time.Hour),
-	})
-	systemPoolID := h.insertJob(t, jobSeed{
-		sessionID:               sessionID,
-		requestMessageID:        requestID,
-		ownerType:               "account",
-		ownerID:                 ownerID,
-		status:                  "system_pool",
-		expiresAt:               now.Add(-1 * time.Second),
-		routingEndsAt:           now.Add(1 * time.Hour),
-		lastSystemPoolEnteredAt: ptrTime(now.Add(-10 * time.Second)),
-	})
-	activeAssignedID := h.insertJob(t, jobSeed{
-		sessionID:            sessionID,
-		requestMessageID:     requestID,
-		ownerType:            "account",
-		ownerID:              ownerID,
-		status:               "assigned",
-		expiresAt:            now.Add(-1 * time.Second),
-		routingEndsAt:        now.Add(1 * time.Hour),
-		responderStakeAmount: h.cfg.ResponderStake,
-		responderStakeStatus: "held",
-	})
-	activeAssignmentID := h.insertAssignment(t, activeAssignedID, ownerID, responderID, now.Add(10*time.Minute), "active")
-	activeClaimID := h.insertJob(t, jobSeed{
-		sessionID:               sessionID,
-		requestMessageID:        requestID,
-		ownerType:               "account",
-		ownerID:                 ownerID,
-		status:                  "system_pool",
-		expiresAt:               now.Add(-1 * time.Second),
-		routingEndsAt:           now.Add(1 * time.Hour),
-		lastSystemPoolEnteredAt: ptrTime(now.Add(-10 * time.Second)),
-		claimOwnerType:          ptrString("account"),
-		claimOwnerID:            ptrString(responderID),
-		claimExpiresAt:          ptrTime(now.Add(10 * time.Minute)),
-		responderStakeAmount:    h.cfg.ResponderStake,
-		responderStakeStatus:    "held",
-	})
-	replyID := h.insertMessage(t, sessionID, "account", ownerID, "reply", "done")
-	repliedID := h.insertJob(t, jobSeed{
-		sessionID:         sessionID,
-		requestMessageID:  requestID,
-		ownerType:         "account",
-		ownerID:           ownerID,
-		status:            "assigned",
-		expiresAt:         now.Add(-1 * time.Second),
-		routingEndsAt:     now.Add(1 * time.Hour),
-		responseMessageID: &replyID,
-	})
-
-	affected, err := h.svc.ProcessExpiry(context.Background())
-	if err != nil {
-		t.Fatalf("ProcessExpiry: %v", err)
-	}
-	if affected != 0 {
-		t.Fatalf("affected = %d, want 0", affected)
-	}
-	if got := h.jobStatus(t, routingID); got != "routing" {
-		t.Fatalf("routing job status = %q, want %q", got, "routing")
-	}
-	if got := h.jobStatus(t, assignedID); got != "assigned" {
-		t.Fatalf("assigned job status = %q, want %q", got, "assigned")
-	}
-	if got := h.jobStatus(t, systemPoolID); got != "system_pool" {
-		t.Fatalf("system pool job status = %q, want %q", got, "system_pool")
-	}
-	if got := h.jobStatus(t, activeAssignedID); got != "assigned" {
-		t.Fatalf("active assigned job status = %q, want %q", got, "assigned")
-	}
-	if got := h.assignmentStatus(t, activeAssignmentID); got != "active" {
-		t.Fatalf("active assignment status = %q, want %q", got, "active")
-	}
-	if got := h.jobStakeStatus(t, activeAssignedID); got != "held" {
-		t.Fatalf("active assigned stake status = %q, want %q", got, "held")
-	}
-	if got := h.jobStatus(t, activeClaimID); got != "system_pool" {
-		t.Fatalf("active claim job status = %q, want %q", got, "system_pool")
-	}
-	if got := h.jobStakeStatus(t, activeClaimID); got != "held" {
-		t.Fatalf("active claim stake status = %q, want %q", got, "held")
-	}
-	if got := h.jobStatus(t, repliedID); got != "assigned" {
-		t.Fatalf("replied job status = %q, want %q", got, "assigned")
-	}
-}
-
-func TestServiceProcessGuestExpiryDoesNothing(t *testing.T) {
-	t.Parallel()
-
-	h := newServiceHarness(t, nil)
-	responderID := h.insertAccount(t, "noah")
-	oldGuestID := h.insertGuest(t, time.Now().Add(-25*time.Hour), nil)
-	revokedAt := time.Now().Add(-1 * time.Hour)
-	revokedGuestID := h.insertGuest(t, time.Now(), &revokedAt)
-	activeGuestID := h.insertGuest(t, time.Now(), nil)
-	accountID := h.insertAccount(t, "tom")
-
-	oldSessionID := h.insertSession(t, "guest", oldGuestID)
-	revokedSessionID := h.insertSession(t, "guest", revokedGuestID)
-	activeSessionID := h.insertSession(t, "guest", activeGuestID)
-	accountSessionID := h.insertSession(t, "account", accountID)
-
-	oldRequestID := h.insertMessage(t, oldSessionID, "guest", oldGuestID, "text", "old")
-	revokedRequestID := h.insertMessage(t, revokedSessionID, "guest", revokedGuestID, "text", "revoked")
-	activeRequestID := h.insertMessage(t, activeSessionID, "guest", activeGuestID, "text", "active")
-	accountRequestID := h.insertMessage(t, accountSessionID, "account", accountID, "text", "account")
-
-	now := time.Now()
-	oldJobID := h.insertJob(t, jobSeed{
-		sessionID:        oldSessionID,
-		requestMessageID: oldRequestID,
-		ownerType:        "guest",
-		ownerID:          oldGuestID,
-		status:           "routing",
-		expiresAt:        now.Add(1 * time.Hour),
-		routingEndsAt:    now.Add(1 * time.Hour),
-	})
-	revokedJobID := h.insertJob(t, jobSeed{
-		sessionID:        revokedSessionID,
-		requestMessageID: revokedRequestID,
-		ownerType:        "guest",
-		ownerID:          revokedGuestID,
-		status:           "assigned",
-		expiresAt:        now.Add(1 * time.Hour),
-		routingEndsAt:    now.Add(1 * time.Hour),
-	})
-	activeAssignedGuestJobID := h.insertJob(t, jobSeed{
-		sessionID:            revokedSessionID,
-		requestMessageID:     revokedRequestID,
-		ownerType:            "guest",
-		ownerID:              revokedGuestID,
-		status:               "assigned",
-		expiresAt:            now.Add(1 * time.Hour),
-		routingEndsAt:        now.Add(1 * time.Hour),
-		responderStakeAmount: h.cfg.ResponderStake,
-		responderStakeStatus: "held",
-	})
-	activeAssignedGuestAssignmentID := h.insertAssignment(t, activeAssignedGuestJobID, accountID, responderID, now.Add(10*time.Minute), "active")
-	activeJobID := h.insertJob(t, jobSeed{
-		sessionID:               activeSessionID,
-		requestMessageID:        activeRequestID,
-		ownerType:               "guest",
-		ownerID:                 activeGuestID,
-		status:                  "system_pool",
-		expiresAt:               now.Add(1 * time.Hour),
-		routingEndsAt:           now.Add(1 * time.Hour),
-		lastSystemPoolEnteredAt: ptrTime(now.Add(-10 * time.Second)),
-	})
-	activeClaimGuestJobID := h.insertJob(t, jobSeed{
-		sessionID:               oldSessionID,
-		requestMessageID:        oldRequestID,
-		ownerType:               "guest",
-		ownerID:                 oldGuestID,
-		status:                  "system_pool",
-		expiresAt:               now.Add(1 * time.Hour),
-		routingEndsAt:           now.Add(1 * time.Hour),
-		lastSystemPoolEnteredAt: ptrTime(now.Add(-10 * time.Second)),
-		claimOwnerType:          ptrString("account"),
-		claimOwnerID:            ptrString(responderID),
-		claimExpiresAt:          ptrTime(now.Add(10 * time.Minute)),
-		responderStakeAmount:    h.cfg.ResponderStake,
-		responderStakeStatus:    "held",
-	})
-	accountJobID := h.insertJob(t, jobSeed{
-		sessionID:        accountSessionID,
-		requestMessageID: accountRequestID,
-		ownerType:        "account",
-		ownerID:          accountID,
-		status:           "routing",
-		expiresAt:        now.Add(1 * time.Hour),
-		routingEndsAt:    now.Add(1 * time.Hour),
-	})
-
-	affected, err := h.svc.ProcessGuestExpiry(context.Background())
-	if err != nil {
-		t.Fatalf("ProcessGuestExpiry: %v", err)
-	}
-	if affected != 0 {
-		t.Fatalf("affected = %d, want 0", affected)
-	}
-	if got := h.jobStatus(t, oldJobID); got != "routing" {
-		t.Fatalf("old guest job status = %q, want %q", got, "routing")
-	}
-	if got := h.jobStatus(t, revokedJobID); got != "assigned" {
-		t.Fatalf("revoked guest job status = %q, want %q", got, "assigned")
-	}
-	if got := h.jobStatus(t, activeAssignedGuestJobID); got != "assigned" {
-		t.Fatalf("active assigned guest job status = %q, want %q", got, "assigned")
-	}
-	if got := h.assignmentStatus(t, activeAssignedGuestAssignmentID); got != "active" {
-		t.Fatalf("active assigned guest assignment status = %q, want %q", got, "active")
-	}
-	if got := h.jobStatus(t, activeJobID); got != "system_pool" {
-		t.Fatalf("active guest job status = %q, want %q", got, "system_pool")
-	}
-	if got := h.jobStatus(t, activeClaimGuestJobID); got != "system_pool" {
-		t.Fatalf("active claim guest job status = %q, want %q", got, "system_pool")
-	}
-	if got := h.jobStatus(t, accountJobID); got != "routing" {
-		t.Fatalf("account job status = %q, want %q", got, "routing")
-	}
-}
-
 func TestServiceProcessAutoReviewPenalizesPrompterAndRewardsResponder(t *testing.T) {
 	t.Parallel()
 
@@ -494,7 +255,6 @@ func TestServiceProcessAutoReviewPenalizesPrompterAndRewardsResponder(t *testing
 		ownerType:            "account",
 		ownerID:              ownerID,
 		status:               "assigned",
-		expiresAt:            now.Add(1 * time.Hour),
 		routingEndsAt:        now.Add(1 * time.Hour),
 		responseMessageID:    &replyID,
 		reviewDeadlineAt:     ptrTime(now.Add(-1 * time.Second)),
@@ -509,7 +269,6 @@ func TestServiceProcessAutoReviewPenalizesPrompterAndRewardsResponder(t *testing
 		ownerType:         "account",
 		ownerID:           ownerID,
 		status:            "assigned",
-		expiresAt:         now.Add(1 * time.Hour),
 		routingEndsAt:     now.Add(1 * time.Hour),
 		responseMessageID: &replyID,
 		reviewDeadlineAt:  ptrTime(now.Add(1 * time.Hour)),
@@ -555,31 +314,26 @@ func TestServiceProcessWalletRefresh(t *testing.T) {
 	oldRefresh := time.Now().Add(-6 * time.Hour)
 	recentRefresh := time.Now().Add(-1 * time.Hour)
 
-	guestRefreshID := h.insertGuest(t, time.Now(), nil)
 	accountRefreshID := h.insertAccount(t, "tom")
-	guestAboveThresholdID := h.insertGuest(t, time.Now(), nil)
+	accountAboveThresholdID := h.insertAccount(t, "sam")
 	accountTooRecentID := h.insertAccount(t, "noah")
 
-	h.insertWallet(t, "guest", guestRefreshID, 0.5, &oldRefresh)
 	h.insertWallet(t, "account", accountRefreshID, 4.0, &oldRefresh)
-	h.insertWallet(t, "guest", guestAboveThresholdID, 3.0, &oldRefresh)
+	h.insertWallet(t, "account", accountAboveThresholdID, 8.0, &oldRefresh)
 	h.insertWallet(t, "account", accountTooRecentID, 4.0, &recentRefresh)
 
 	affected, err := h.svc.ProcessWalletRefresh(context.Background())
 	if err != nil {
 		t.Fatalf("ProcessWalletRefresh: %v", err)
 	}
-	if affected != 2 {
-		t.Fatalf("affected = %d, want 2", affected)
-	}
-	if got := h.walletBalance(t, "guest", guestRefreshID); got != 5.0 {
-		t.Fatalf("guest refresh balance = %v, want 5.0", got)
+	if affected != 1 {
+		t.Fatalf("affected = %d, want 1", affected)
 	}
 	if got := h.walletBalance(t, "account", accountRefreshID); got != 25.0 {
 		t.Fatalf("account refresh balance = %v, want 25.0", got)
 	}
-	if got := h.walletBalance(t, "guest", guestAboveThresholdID); got != 3.0 {
-		t.Fatalf("guest above-threshold balance = %v, want 3.0", got)
+	if got := h.walletBalance(t, "account", accountAboveThresholdID); got != 8.0 {
+		t.Fatalf("account above-threshold balance = %v, want 8.0", got)
 	}
 	if got := h.walletBalance(t, "account", accountTooRecentID); got != 4.0 {
 		t.Fatalf("account too-recent balance = %v, want 4.0", got)
@@ -635,14 +389,10 @@ func newServiceHarness(t *testing.T, mutate func(*config.Config)) *serviceHarnes
 		PrompterCancelPenalty:     0.2,
 		AutoReviewPrompterPenalty: 0.6,
 		AutoReviewResponderReward: 0.4,
-		GuestInitialBalance:       100,
 		AccountInitialBalance:     100,
 		RefreshInterval:           5 * time.Hour,
-		GuestRefreshThreshold:     1,
-		GuestRefreshTarget:        5,
 		AccountRefreshThreshold:   5,
 		AccountRefreshTarget:      25,
-		GuestJobInactivityExpiry:  24 * time.Hour,
 		RoutingWindow:             30 * time.Second,
 		PoolDwellWindow:           30 * time.Second,
 		ReviewWindow:              24 * time.Hour,
@@ -694,13 +444,6 @@ func (h *serviceHarness) insertAccount(t *testing.T, name string) string {
 	return id
 }
 
-func (h *serviceHarness) insertGuest(t *testing.T, lastSeenAt time.Time, revokedAt *time.Time) string {
-	t.Helper()
-	id := domain.NewID("gst")
-	h.execSQL(t, `INSERT INTO guest_sessions(id, guest_token_hash, last_seen_at, revoked_at) VALUES ($1, $2, $3, $4)`, id, domain.NewID("gk"), lastSeenAt, revokedAt)
-	return id
-}
-
 func (h *serviceHarness) insertWallet(t *testing.T, ownerType, ownerID string, balance float64, lastRefreshAt *time.Time) string {
 	t.Helper()
 	id := domain.NewID("wal")
@@ -733,18 +476,18 @@ func (h *serviceHarness) insertJob(t *testing.T, seed jobSeed) string {
 	h.execSQL(t, `
 INSERT INTO jobs(
   id, session_id, request_message_id, owner_type, owner_id, status,
-  activated_at, expires_at, routing_ends_at, response_message_id,
+  activated_at, routing_ends_at, response_message_id,
   prompter_vote, review_deadline_at, routing_cycle_count,
   last_routing_entered_at, last_system_pool_entered_at,
   claim_owner_type, claim_owner_id, claim_expires_at,
   responder_stake_amount, responder_stake_status
 ) VALUES (
   $1, $2, $3, $4, $5, $6,
-  now(), $7, $8, $9,
-  $10, $11, $12,
-  $13, $14,
-  $15, $16, $17,
-  $18, $19
+  now(), $7, $8,
+  $9, $10, $11,
+  $12, $13,
+  $14, $15, $16,
+  $17, $18
 )`,
 		id,
 		seed.sessionID,
@@ -752,7 +495,6 @@ INSERT INTO jobs(
 		seed.ownerType,
 		seed.ownerID,
 		seed.status,
-		seed.expiresAt,
 		seed.routingEndsAt,
 		seed.responseMessageID,
 		seed.prompterVote,

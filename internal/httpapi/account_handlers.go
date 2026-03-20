@@ -13,10 +13,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func (s *Server) handleGuestSessionCreate(w http.ResponseWriter, r *http.Request) {
-	respondErr(w, http.StatusNotFound, "not_found")
-}
-
 func (s *Server) handleAccountRegister(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var body struct {

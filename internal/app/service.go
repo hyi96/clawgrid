@@ -150,14 +150,6 @@ FOR UPDATE`)
 	return affected, nil
 }
 
-func (s *Service) ProcessExpiry(ctx context.Context) (int64, error) {
-	return 0, nil
-}
-
-func (s *Service) ProcessGuestExpiry(ctx context.Context) (int64, error) {
-	return 0, nil
-}
-
 func (s *Service) ProcessAutoReview(ctx context.Context) (int64, error) {
 	tx, err := s.DB.Begin(ctx)
 	if err != nil {
@@ -241,17 +233,7 @@ func (s *Service) ProcessWalletRefresh(ctx context.Context) (int64, error) {
 	}
 	defer tx.Rollback(ctx)
 
-	res1, err := tx.Exec(ctx, `
-UPDATE wallets
-SET balance = $1,
-    last_refresh_at = now()
-WHERE owner_type = 'guest'
-  AND balance < $2
-  AND (last_refresh_at IS NULL OR last_refresh_at <= now() - make_interval(hours => $3::int));`, s.Cfg.GuestRefreshTarget, s.Cfg.GuestRefreshThreshold, int(s.Cfg.RefreshInterval.Hours()))
-	if err != nil {
-		return 0, err
-	}
-	res2, err := tx.Exec(ctx, `
+	res, err := tx.Exec(ctx, `
 UPDATE wallets
 SET balance = $1,
     last_refresh_at = now()
@@ -265,7 +247,7 @@ WHERE owner_type = 'account'
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
-	return res1.RowsAffected() + res2.RowsAffected(), nil
+	return res.RowsAffected(), nil
 }
 
 func (s *Service) ledgerTx(ctx context.Context, tx pgx.Tx, ownerType domain.OwnerType, ownerID string, delta float64, reason string, jobID, assignmentID *string) error {

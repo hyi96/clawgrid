@@ -418,9 +418,8 @@ func TestJobClaimRejectsResponderWithOtherActiveWork(t *testing.T) {
 	sessionA := h.createSession(t, prompterA.apiKey)
 	jobAssigned := h.postMessage(t, prompterA.apiKey, sessionA, "assigned job")
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
-		"job_id":               jobAssigned,
-		"responder_owner_type": "account",
-		"responder_owner_id":   responder.accountID,
+		"job_id":             jobAssigned,
+		"responder_owner_id": responder.accountID,
 	}, http.StatusCreated, nil)
 
 	sessionB := h.createSession(t, prompterB.apiKey)
@@ -559,24 +558,6 @@ WHERE owner_type = 'account'
 	}
 }
 
-func TestAssignmentRejectsInvalidResponderOwnerType(t *testing.T) {
-	t.Parallel()
-
-	h := newIntegrationHarness(t)
-
-	dispatcher := h.registerAccount(t, "dispatch")
-	prompter := h.registerAccount(t, "tom")
-	responder := h.registerAccount(t, "noah")
-	sessionID := h.createSession(t, prompter.apiKey)
-	jobID := h.postMessage(t, prompter.apiKey, sessionID, "assign this directly")
-
-	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
-		"job_id":               jobID,
-		"responder_owner_type": "robot",
-		"responder_owner_id":   responder.accountID,
-	}, http.StatusBadRequest, nil)
-}
-
 func TestAssignmentRejectsUnknownResponderIdentity(t *testing.T) {
 	t.Parallel()
 
@@ -588,9 +569,8 @@ func TestAssignmentRejectsUnknownResponderIdentity(t *testing.T) {
 	jobID := h.postMessage(t, prompter.apiKey, sessionID, "assign this directly")
 
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
-		"job_id":               jobID,
-		"responder_owner_type": "account",
-		"responder_owner_id":   "acct_missing",
+		"job_id":             jobID,
+		"responder_owner_id": "acct_missing",
 	}, http.StatusNotFound, nil)
 }
 
@@ -605,9 +585,8 @@ func TestPrompterCannotSendNewMessageWhileFeedbackIsPending(t *testing.T) {
 	jobID := h.postMessage(t, prompter.apiKey, sessionID, "first prompt")
 
 	h.requestJSON(t, http.MethodPost, "/assignments", prompter.apiKey, map[string]any{
-		"job_id":               jobID,
-		"responder_owner_type": "account",
-		"responder_owner_id":   responder.accountID,
+		"job_id":             jobID,
+		"responder_owner_id": responder.accountID,
 	}, http.StatusCreated, nil)
 
 	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/reply", responder.apiKey, map[string]any{
@@ -665,9 +644,8 @@ func TestSessionStateTracksPromptToFeedbackCycle(t *testing.T) {
 	}
 
 	h.requestJSON(t, http.MethodPost, "/assignments", prompter.apiKey, map[string]any{
-		"job_id":               jobID,
-		"responder_owner_type": "account",
-		"responder_owner_id":   responder.accountID,
+		"job_id":             jobID,
+		"responder_owner_id": responder.accountID,
 	}, http.StatusCreated, nil)
 
 	var working struct {
@@ -1462,9 +1440,8 @@ func TestAssignmentTimeoutReturnsJobToSystemPool(t *testing.T) {
 		ID string `json:"id"`
 	}
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
-		"job_id":               jobID,
-		"responder_owner_type": "account",
-		"responder_owner_id":   responder.accountID,
+		"job_id":             jobID,
+		"responder_owner_id": responder.accountID,
 	}, http.StatusCreated, &assignment)
 
 	h.execSQL(t, `UPDATE assignments SET deadline_at = now() - interval '1 second' WHERE id = $1`, assignment.ID)
@@ -1739,14 +1716,10 @@ func newIntegrationHarnessWithConfig(t *testing.T, mutate func(*config.Config)) 
 		PrompterCancelPenalty:     0.2,
 		AutoReviewPrompterPenalty: 0.6,
 		AutoReviewResponderReward: 0.4,
-		GuestInitialBalance:       100,
 		AccountInitialBalance:     100,
 		RefreshInterval:           5 * time.Hour,
-		GuestRefreshThreshold:     1,
-		GuestRefreshTarget:        5,
 		AccountRefreshThreshold:   5,
 		AccountRefreshTarget:      25,
-		GuestJobInactivityExpiry:  24 * time.Hour,
 		RoutingWindow:             0,
 		PoolDwellWindow:           60 * time.Second,
 		ReviewWindow:              24 * time.Hour,
@@ -1845,11 +1818,11 @@ func (h *integrationHarness) seedRatedCompletedJob(t *testing.T, prompterAccount
 	h.execSQL(t, `
 INSERT INTO jobs(
   id, session_id, request_message_id, owner_type, owner_id, status,
-  created_at, activated_at, expires_at, routing_ends_at, response_message_id,
+  created_at, activated_at, routing_ends_at, response_message_id,
   tip_amount, post_fee_amount, prompter_vote, review_deadline_at
-) VALUES ($1,$2,$3,'account',$4,'completed',$5,$6,$7,$8,$9,0,2,$10,$11)`,
+) VALUES ($1,$2,$3,'account',$4,'completed',$5,$6,$7,$8,0,2,$9,$10)`,
 		jobID, sessionID, requestMessageID, prompterAccountID,
-		now.Add(-2*time.Hour), now.Add(-2*time.Hour), now.Add(24*time.Hour), now.Add(-110*time.Minute),
+		now.Add(-2*time.Hour), now.Add(-2*time.Hour), now.Add(-110*time.Minute),
 		responseMessageID, vote, now.Add(-60*time.Minute))
 	h.execSQL(t, `
 INSERT INTO assignments(

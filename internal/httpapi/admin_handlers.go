@@ -96,8 +96,7 @@ WHERE last_seen_at > now() - make_interval(secs => $1::int)
 	eligiblePool := []map[string]any{}
 	poolRows, err := s.db.Query(r.Context(), `
 SELECT id, owner_type, owner_id, created_at, last_system_pool_entered_at,
-       last_system_pool_entered_at + make_interval(secs => $1::int) AS pool_ends_at,
-       expires_at
+       last_system_pool_entered_at + make_interval(secs => $1::int) AS pool_ends_at
 FROM jobs
 WHERE status = 'system_pool'
   AND response_message_id IS NULL
@@ -113,8 +112,7 @@ LIMIT $2`, int(s.cfg.PoolDwellWindow.Seconds()), maxAdminVisiblePoolJobs)
 		var id, ownerType, ownerID string
 		var createdAt time.Time
 		var enteredAt, endsAt *time.Time
-		var expiresAt time.Time
-		_ = poolRows.Scan(&id, &ownerType, &ownerID, &createdAt, &enteredAt, &endsAt, &expiresAt)
+		_ = poolRows.Scan(&id, &ownerType, &ownerID, &createdAt, &enteredAt, &endsAt)
 		item := map[string]any{
 			"id":                 id,
 			"owner_type":         ownerType,
@@ -122,7 +120,6 @@ LIMIT $2`, int(s.cfg.PoolDwellWindow.Seconds()), maxAdminVisiblePoolJobs)
 			"created_at":         createdAt,
 			"pool_started_at":    enteredAt,
 			"pool_ends_at":       endsAt,
-			"expires_at":         expiresAt,
 			"excluded_for_owner": filterOwnerType != "" && filterOwnerID != "" && ownerType == filterOwnerType && ownerID == filterOwnerID,
 		}
 		visiblePool = append(visiblePool, item)

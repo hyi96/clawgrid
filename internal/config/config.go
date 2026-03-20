@@ -26,14 +26,10 @@ type Config struct {
 	PrompterCancelPenalty     float64
 	AutoReviewPrompterPenalty float64
 	AutoReviewResponderReward float64
-	GuestInitialBalance       float64
 	AccountInitialBalance     float64
 	RefreshInterval           time.Duration
-	GuestRefreshThreshold     float64
-	GuestRefreshTarget        float64
 	AccountRefreshThreshold   float64
 	AccountRefreshTarget      float64
-	GuestJobInactivityExpiry  time.Duration
 	RoutingWindow             time.Duration
 	PoolDwellWindow           time.Duration
 	ReviewWindow              time.Duration
@@ -47,7 +43,7 @@ func Load() (Config, error) {
 		HTTPAddr:                  getenv("HTTP_ADDR", ":8080"),
 		DatabaseURL:               getenv("DATABASE_URL", "postgres://clawgrid:clawgrid@db:5432/clawgrid?sslmode=disable"),
 		FrontendOrigin:            getenv("FRONTEND_ORIGIN", "http://localhost:5173"),
-		AuthTokenSecret:           getenvCompat("AUTH_TOKEN_SECRET", "GUEST_TOKEN_SECRET", "dev-auth-secret"),
+		AuthTokenSecret:           getenv("AUTH_TOKEN_SECRET", "dev-auth-secret"),
 		AdminPathToken:            getenv("ADMIN_PATH_TOKEN", ""),
 		SignupPathToken:           getenv("SIGNUP_PATH_TOKEN", "clawgrid-signup"),
 		TurnstileSecretKey:        getenv("TURNSTILE_SECRET_KEY", ""),
@@ -61,14 +57,10 @@ func Load() (Config, error) {
 		PrompterCancelPenalty:     getfloat("PROMPTER_CANCEL_PENALTY", 0.2),
 		AutoReviewPrompterPenalty: getfloat("AUTO_REVIEW_PROMPTER_PENALTY", 0.6),
 		AutoReviewResponderReward: getfloat("AUTO_REVIEW_RESPONDER_REWARD", 0.4),
-		GuestInitialBalance:       getfloat("GUEST_INITIAL_BALANCE", 100.0),
 		AccountInitialBalance:     getfloat("ACCOUNT_INITIAL_BALANCE", 100.0),
 		RefreshInterval:           getdurh("REFRESH_INTERVAL_HOURS", 5),
-		GuestRefreshThreshold:     getfloat("GUEST_REFRESH_THRESHOLD", 1.0),
-		GuestRefreshTarget:        getfloat("GUEST_REFRESH_TARGET", 5.0),
 		AccountRefreshThreshold:   getfloat("ACCOUNT_REFRESH_THRESHOLD", 5.0),
 		AccountRefreshTarget:      getfloat("ACCOUNT_REFRESH_TARGET", 25.0),
-		GuestJobInactivityExpiry:  getdurh("GUEST_JOB_INACTIVITY_EXPIRY_HOURS", 24),
 		RoutingWindow:             getdurs("ROUTING_WINDOW_SECONDS", 30),
 		PoolDwellWindow:           getdurs("POOL_DWELL_SECONDS", 30),
 		ReviewWindow:              getdurh("REVIEW_WINDOW_HOURS", 24),
@@ -85,16 +77,6 @@ func Load() (Config, error) {
 
 func getenv(k, d string) string {
 	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return d
-}
-
-func getenvCompat(primary, legacy, d string) string {
-	if v := os.Getenv(primary); v != "" {
-		return v
-	}
-	if v := os.Getenv(legacy); v != "" {
 		return v
 	}
 	return d
