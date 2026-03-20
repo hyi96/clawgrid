@@ -11,23 +11,25 @@ import (
 )
 
 func (s *Server) handleRespondersAvailable(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
+	if err := s.markDispatcherActivity(r.Context(), actor); err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	activeDispatchers, err := s.recentActiveDispatchers(r.Context())
+	if err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	bandSize := dispatchBandSize(activeDispatchers, maxDispatchResponders, dispatchRespondersBandBase)
 	rows, err := s.db.Query(r.Context(), `
 SELECT ra.owner_type, ra.owner_id, ra.last_seen_at, ra.poll_started_at,
-       CASE
-         WHEN ra.owner_type = 'account' THEN COALESCE(a.name, 'account')
-         WHEN ra.owner_type = 'guest' THEN 'guest'
-         ELSE ra.owner_type
-       END AS display_name,
-       CASE
-         WHEN ra.owner_type = 'account' THEN COALESCE(a.responder_description, '')
-         WHEN ra.owner_type = 'guest' THEN COALESCE(gs.responder_description, '')
-         ELSE ''
-       END AS responder_description
+       COALESCE(a.name, 'account') AS display_name,
+       COALESCE(a.responder_description, '') AS responder_description
 FROM responder_availability
   ra
 LEFT JOIN accounts a ON ra.owner_type = 'account' AND a.id = ra.owner_id
-LEFT JOIN guest_sessions gs ON ra.owner_type = 'guest' AND gs.id = ra.owner_id
-WHERE ra.last_seen_at > now() - make_interval(secs => $1::int)
+WHERE ra.owner_type = 'account'
+  AND ra.last_seen_at > now() - make_interval(secs => $1::int)
   AND NOT (ra.owner_type = $2 AND ra.owner_id = $3)
   AND ra.poll_started_at > now() - make_interval(secs => $4::int)
   AND NOT EXISTS (
@@ -49,24 +51,31 @@ WHERE ra.last_seen_at > now() - make_interval(secs => $1::int)
       AND j3.claim_expires_at > now()
   )
 ORDER BY ra.last_seen_at DESC
-LIMIT $5`, int(s.cfg.ResponderActiveWindow.Seconds()), string(actor.OwnerType), actor.OwnerID, int(s.cfg.PollAssignmentWait.Seconds()), maxDispatchResponders)
+LIMIT $5`, int(s.cfg.ResponderActiveWindow.Seconds()), string(actor.OwnerType), actor.OwnerID, int(s.cfg.PollAssignmentWait.Seconds()), bandSize)
 	if err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	defer rows.Close()
-	items := []map[string]any{}
+	candidates := []availableResponderRow{}
 	for rows.Next() {
-		var ot, oid, displayName, desc string
-		var seen, pollStarted time.Time
-		_ = rows.Scan(&ot, &oid, &seen, &pollStarted, &displayName, &desc)
+		var row availableResponderRow
+		_ = rows.Scan(&row.ownerType, &row.ownerID, &row.lastSeenAt, &row.pollStartedAt, &row.displayName, &row.description)
+		candidates = append(candidates, row)
+	}
+	shuffleRespondersForDispatcher(candidates, actor, time.Now())
+	if len(candidates) > maxDispatchResponders {
+		candidates = candidates[:maxDispatchResponders]
+	}
+	items := []map[string]any{}
+	for _, row := range candidates {
 		items = append(items, map[string]any{
-			"owner_type":              ot,
-			"owner_id":                oid,
-			"display_name":            displayName,
-			"last_seen_at":            seen,
-			"poll_started_at":         pollStarted,
-			"responder_description":   desc,
+			"owner_type":              row.ownerType,
+			"owner_id":                row.ownerID,
+			"display_name":            row.displayName,
+			"last_seen_at":            row.lastSeenAt,
+			"poll_started_at":         row.pollStartedAt,
+			"responder_description":   row.description,
 			"assignment_wait_seconds": int(s.cfg.PollAssignmentWait.Seconds()),
 		})
 	}
@@ -204,8 +213,17 @@ func (s *Server) handleResponderWork(w http.ResponseWriter, r *http.Request, act
 		}
 	}
 
+	activeResponders, err := s.recentActiveResponders(ctx)
+	if err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	bandSize := dispatchBandSize(activeResponders, maxSystemPoolCandidates, systemPoolBandBase)
+
 	rows, qerr := s.db.Query(ctx, `
 SELECT id,
+       created_at,
+       routing_cycle_count,
        last_system_pool_entered_at,
        last_system_pool_entered_at + make_interval(secs => $3::int) AS pool_ends_at,
        tip_amount,
@@ -213,29 +231,34 @@ SELECT id,
 FROM jobs
 	WHERE status = 'system_pool'
 	  AND response_message_id IS NULL
-	  AND expires_at > now()
 	  AND (claim_expires_at IS NULL OR claim_expires_at <= now())
 	  AND NOT (owner_type = $1 AND owner_id = $2)
-	ORDER BY created_at ASC
-	LIMIT $4`, string(actor.OwnerType), actor.OwnerID, int(s.cfg.PoolDwellWindow.Seconds()), maxSystemPoolCandidates)
+	ORDER BY routing_cycle_count DESC, tip_amount DESC, created_at ASC
+	LIMIT $4`, string(actor.OwnerType), actor.OwnerID, int(s.cfg.PoolDwellWindow.Seconds()), bandSize)
 	if qerr != nil {
 		respondErr(w, http.StatusInternalServerError, qerr.Error())
 		return
 	}
 	defer rows.Close()
-	candidates := []map[string]any{}
+	candidateRows := []poolJobRow{}
 	for rows.Next() {
-		var id string
-		var tipAmount float64
-		var timeLimitMinutes int
-		var enteredAt, endsAt *time.Time
-		_ = rows.Scan(&id, &enteredAt, &endsAt, &tipAmount, &timeLimitMinutes)
+		var row poolJobRow
+		_ = rows.Scan(&row.id, &row.createdAt, &row.cycles, &row.enteredAt, &row.endsAt, &row.tipAmount, &row.timeLimitMinutes)
+		candidateRows = append(candidateRows, row)
+	}
+	shufflePoolJobsForResponder(candidateRows, actor, time.Now())
+	if len(candidateRows) > maxSystemPoolCandidates {
+		candidateRows = candidateRows[:maxSystemPoolCandidates]
+	}
+
+	candidates := []map[string]any{}
+	for _, row := range candidateRows {
 		candidates = append(candidates, map[string]any{
-			"id":                 id,
-			"pool_started_at":    enteredAt,
-			"pool_ends_at":       endsAt,
-			"tip_amount":         tipAmount,
-			"time_limit_minutes": timeLimitMinutes,
+			"id":                 row.id,
+			"pool_started_at":    row.enteredAt,
+			"pool_ends_at":       row.endsAt,
+			"tip_amount":         row.tipAmount,
+			"time_limit_minutes": row.timeLimitMinutes,
 		})
 	}
 	if err := s.storeResponderPoolSnapshot(ctx, actor, candidates); err != nil {

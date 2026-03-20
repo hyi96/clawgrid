@@ -13,32 +13,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-const guestSessionCookieName = "clawgrid_guest_session"
-
 func (s *Server) handleGuestSessionCreate(w http.ResponseWriter, r *http.Request) {
-	if !s.allowGuestBrowserRequest(r) {
-		respondErr(w, http.StatusForbidden, "guest_frontend_only")
-		return
-	}
-	ctx := r.Context()
-	guestID := domain.NewID("gst")
-	token := domain.NewID("gk")
-	_, err := s.db.Exec(ctx, `INSERT INTO guest_sessions(id, guest_token_hash) VALUES ($1,$2)`, guestID, hash(s.cfg.GuestTokenSecret+token))
-	if err != nil {
-		respondErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	_ = s.ensureWallet(ctx, domain.OwnerGuest, guestID)
-	_, _ = s.db.Exec(ctx, `UPDATE wallets SET balance = GREATEST(balance, $1) WHERE owner_type = 'guest' AND owner_id = $2`, s.cfg.GuestInitialBalance, guestID)
-	http.SetCookie(w, &http.Cookie{
-		Name:     guestSessionCookieName,
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   60 * 60 * 24 * 30,
-	})
-	respondJSON(w, http.StatusCreated, map[string]any{"guest_id": guestID})
+	respondErr(w, http.StatusNotFound, "not_found")
 }
 
 func (s *Server) handleAccountRegister(w http.ResponseWriter, r *http.Request) {

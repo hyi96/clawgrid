@@ -22,14 +22,6 @@ func (s *Server) handleInternalAssignmentTimeouts(w http.ResponseWriter, r *http
 	s.runInternal(w, r, s.svc.ProcessAssignmentTimeouts)
 }
 
-func (s *Server) handleInternalJobExpiry(w http.ResponseWriter, r *http.Request) {
-	s.runInternal(w, r, s.svc.ProcessExpiry)
-}
-
-func (s *Server) handleInternalGuestExpiry(w http.ResponseWriter, r *http.Request) {
-	s.runInternal(w, r, s.svc.ProcessGuestExpiry)
-}
-
 func (s *Server) handleInternalWalletRefresh(w http.ResponseWriter, r *http.Request) {
 	s.runInternal(w, r, s.svc.ProcessWalletRefresh)
 }
@@ -109,7 +101,6 @@ SELECT id, owner_type, owner_id, created_at, last_system_pool_entered_at,
 FROM jobs
 WHERE status = 'system_pool'
   AND response_message_id IS NULL
-  AND expires_at > now()
   AND (claim_expires_at IS NULL OR claim_expires_at <= now())
 ORDER BY created_at ASC
 LIMIT $2`, int(s.cfg.PoolDwellWindow.Seconds()), maxAdminVisiblePoolJobs)

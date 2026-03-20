@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -470,10 +469,10 @@ func TestJobClaimAllowsOnlyOneConcurrentClaimForSameResponder(t *testing.T) {
 	h.execSQL(t, `UPDATE jobs SET status = 'system_pool', last_system_pool_entered_at = now() WHERE id = $1`, jobB)
 
 	type claimResult struct {
-		jobID   string
-		status  int
-		body    string
-		err     error
+		jobID  string
+		status int
+		body   string
+		err    error
 	}
 
 	client := &http.Client{}
@@ -558,6 +557,41 @@ WHERE owner_type = 'account'
 	if claimedJobID == "" {
 		t.Fatal("claimedJobID empty, want one successful claim")
 	}
+}
+
+func TestAssignmentRejectsInvalidResponderOwnerType(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	dispatcher := h.registerAccount(t, "dispatch")
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "assign this directly")
+
+	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
+		"job_id":               jobID,
+		"responder_owner_type": "robot",
+		"responder_owner_id":   responder.accountID,
+	}, http.StatusBadRequest, nil)
+}
+
+func TestAssignmentRejectsUnknownResponderIdentity(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	dispatcher := h.registerAccount(t, "dispatch")
+	prompter := h.registerAccount(t, "tom")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "assign this directly")
+
+	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
+		"job_id":               jobID,
+		"responder_owner_type": "account",
+		"responder_owner_id":   "acct_missing",
+	}, http.StatusNotFound, nil)
 }
 
 func TestPrompterCannotSendNewMessageWhileFeedbackIsPending(t *testing.T) {
@@ -784,56 +818,11 @@ func TestSessionCreateAcceptsOptionalTitle(t *testing.T) {
 	}
 }
 
-func TestGuestSessionUsesCookieAuthInsteadOfReturningReusableToken(t *testing.T) {
+func TestGuestSessionEndpointUnavailable(t *testing.T) {
 	t.Parallel()
 
 	h := newIntegrationHarness(t)
-
-	client := &http.Client{}
-	var guest struct {
-		GuestID string `json:"guest_id"`
-	}
-	h.rawRequest(t, client, http.MethodPost, "/guest/sessions", nil, nil, http.StatusForbidden)
-	body := h.rawRequest(t, client, http.MethodPost, "/guest/sessions", nil, map[string]string{
-		"Origin": h.app.cfg.FrontendOrigin,
-	}, http.StatusCreated)
-	if err := json.Unmarshal(body, &guest); err != nil {
-		t.Fatalf("decode guest session response: %v", err)
-	}
-	if guest.GuestID == "" {
-		t.Fatal("guest_id was empty")
-	}
-	var raw map[string]any
-	if err := json.Unmarshal(body, &raw); err != nil {
-		t.Fatalf("decode guest session map: %v", err)
-	}
-	if _, ok := raw["guest_token"]; ok {
-		t.Fatal("guest_token should not be returned in guest session response")
-	}
-
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		t.Fatalf("cookiejar.New: %v", err)
-	}
-	client.Jar = jar
-	h.rawRequest(t, client, http.MethodPost, "/guest/sessions", nil, map[string]string{
-		"Origin": h.app.cfg.FrontendOrigin,
-	}, http.StatusCreated)
-
-	var session struct {
-		ID string `json:"id"`
-	}
-	body = h.rawRequest(t, client, http.MethodPost, "/sessions", nil, map[string]string{
-		"Origin": h.app.cfg.FrontendOrigin,
-	}, http.StatusCreated)
-	if err := json.Unmarshal(body, &session); err != nil {
-		t.Fatalf("decode session create response: %v", err)
-	}
-	if session.ID == "" {
-		t.Fatal("session id was empty")
-	}
-
-	h.rawRequest(t, client, http.MethodGet, "/sessions", nil, nil, http.StatusUnauthorized)
+	h.rawRequest(t, &http.Client{}, http.MethodPost, "/guest/sessions", nil, nil, http.StatusNotFound)
 }
 
 func TestAccountRegisterRequiresUniqueUsernameAndSeparatesPasswordLoginFromAPIKeys(t *testing.T) {
@@ -1239,7 +1228,7 @@ func TestPoolClaimReplyDownvoteSlashesStake(t *testing.T) {
 	}
 }
 
-func TestAutoReviewRefundsStakeWithoutReward(t *testing.T) {
+func TestAutoReviewPenalizesPrompterKeepsTipAndRewardsResponder(t *testing.T) {
 	t.Parallel()
 
 	h := newIntegrationHarness(t)
@@ -1247,7 +1236,15 @@ func TestAutoReviewRefundsStakeWithoutReward(t *testing.T) {
 	prompter := h.registerAccount(t, "tom")
 	responder := h.registerAccount(t, "noah")
 	sessionID := h.createSession(t, prompter.apiKey)
-	jobID := h.postMessage(t, prompter.apiKey, sessionID, "ghost this one")
+	var created struct {
+		JobID string `json:"job_id"`
+	}
+	h.requestJSON(t, http.MethodPost, "/sessions/"+sessionID+"/messages", prompter.apiKey, map[string]any{
+		"content":            "ghost this one",
+		"time_limit_minutes": 5,
+		"tip_amount":         2.0,
+	}, http.StatusCreated, &created)
+	jobID := created.JobID
 
 	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
 
@@ -1286,8 +1283,29 @@ func TestAutoReviewRefundsStakeWithoutReward(t *testing.T) {
 		t.Fatalf("prompter_vote = %q, want %q", job.PrompterVote, "auto")
 	}
 
-	if got := h.walletBalance(t, responder.apiKey); got != 100.0 {
-		t.Fatalf("responder balance = %v, want %v", got, 100.0)
+	var messages struct {
+		Items []struct {
+			Type    string `json:"type"`
+			Content string `json:"content"`
+		} `json:"items"`
+	}
+	h.requestJSON(t, http.MethodGet, "/sessions/"+sessionID+"/messages", prompter.apiKey, nil, http.StatusOK, &messages)
+	foundNoFeedback := false
+	for _, item := range messages.Items {
+		if item.Type == "feedback" && item.Content == "no feedback" {
+			foundNoFeedback = true
+			break
+		}
+	}
+	if !foundNoFeedback {
+		t.Fatal("expected auto-review to append a no-feedback message")
+	}
+
+	if got := h.walletBalance(t, responder.apiKey); got != 100.4 {
+		t.Fatalf("responder balance = %v, want %v", got, 100.4)
+	}
+	if got := h.walletBalance(t, prompter.apiKey); got != 95.4 {
+		t.Fatalf("prompter balance = %v, want %v", got, 95.4)
 	}
 }
 
@@ -1401,9 +1419,8 @@ func TestDirectAssignmentResponderWorkReturnsAssignedJob(t *testing.T) {
 		ID string `json:"id"`
 	}
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
-		"job_id":               jobID,
-		"responder_owner_type": "account",
-		"responder_owner_id":   responder.accountID,
+		"job_id":             jobID,
+		"responder_owner_id": responder.accountID,
 	}, http.StatusCreated, &assignment)
 
 	var work struct {
@@ -1576,6 +1593,47 @@ func TestPoolRotationMovesUnclaimedJobBackToRouting(t *testing.T) {
 	}
 }
 
+func TestRoutingJobsOrderedByCycleThenTipThenAge(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	dispatcher := h.registerAccount(t, "dispatch")
+	prompter := h.registerAccount(t, "tom")
+
+	sessionA := h.createSession(t, prompter.apiKey)
+	jobA := h.postMessage(t, prompter.apiKey, sessionA, "job a")
+	sessionB := h.createSession(t, prompter.apiKey)
+	jobB := h.postMessage(t, prompter.apiKey, sessionB, "job b")
+	sessionC := h.createSession(t, prompter.apiKey)
+	jobC := h.postMessage(t, prompter.apiKey, sessionC, "job c")
+	sessionD := h.createSession(t, prompter.apiKey)
+	jobD := h.postMessage(t, prompter.apiKey, sessionD, "job d")
+
+	h.execSQL(t, `UPDATE jobs SET routing_cycle_count = 2, tip_amount = 0, created_at = now() - interval '2 minutes' WHERE id = $1`, jobA)
+	h.execSQL(t, `UPDATE jobs SET routing_cycle_count = 1, tip_amount = 10, created_at = now() - interval '4 minutes' WHERE id = $1`, jobB)
+	h.execSQL(t, `UPDATE jobs SET routing_cycle_count = 2, tip_amount = 5, created_at = now() - interval '90 seconds' WHERE id = $1`, jobC)
+	h.execSQL(t, `UPDATE jobs SET routing_cycle_count = 2, tip_amount = 5, created_at = now() - interval '3 minutes' WHERE id = $1`, jobD)
+
+	var routing struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	h.requestJSON(t, http.MethodGet, "/routing/jobs", dispatcher.apiKey, nil, http.StatusOK, &routing)
+
+	if len(routing.Items) < 4 {
+		t.Fatalf("routing item count = %d, want at least 4", len(routing.Items))
+	}
+	got := []string{routing.Items[0].ID, routing.Items[1].ID, routing.Items[2].ID, routing.Items[3].ID}
+	want := []string{jobD, jobC, jobA, jobB}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("routing order = %v, want %v", got, want)
+		}
+	}
+}
+
 func TestPoolRotationDoesNotMoveActivelyClaimedJob(t *testing.T) {
 	t.Parallel()
 
@@ -1665,36 +1723,36 @@ func newIntegrationHarnessWithConfig(t *testing.T, mutate func(*config.Config)) 
 	}
 
 	cfg := config.Config{
-		HTTPAddr:                 ":0",
-		DatabaseURL:              appURL,
-		FrontendOrigin:           "http://localhost:5173",
-		GuestTokenSecret:         "integration-secret",
-		AdminPathToken:           "integration-admin",
-		SignupPathToken:          "clawgrid-signup",
-		WorkerTick:               time.Second,
-		PostFee:                  2.0,
-		ResponderPool:            1.4,
-		ResponderStake:           0.6,
-		DispatcherPool:           0.4,
-		Sink:                     0.2,
-		DispatchPenalty:          0.2,
-		ResponderPenalty:         0.2,
-		PrompterCancelPenalty:    0.2,
-		GuestInitialBalance:      100,
-		AccountInitialBalance:    100,
-		RefreshInterval:          5 * time.Hour,
-		GuestRefreshThreshold:    1,
-		GuestRefreshTarget:       5,
-		AccountRefreshThreshold:  5,
-		AccountRefreshTarget:     25,
-		GuestJobInactivityExpiry: 24 * time.Hour,
-		RoutingWindow:            0,
-		PoolDwellWindow:          60 * time.Second,
-		JobExpiry:                24 * time.Hour,
-		ReviewWindow:             24 * time.Hour,
-		AssignmentDeadline:       30 * time.Minute,
-		PollAssignmentWait:       0,
-		ResponderActiveWindow:    12 * time.Second,
+		HTTPAddr:                  ":0",
+		DatabaseURL:               appURL,
+		FrontendOrigin:            "http://localhost:5173",
+		AuthTokenSecret:           "integration-secret",
+		AdminPathToken:            "integration-admin",
+		SignupPathToken:           "clawgrid-signup",
+		WorkerTick:                time.Second,
+		PostFee:                   2.0,
+		ResponderPool:             1.4,
+		ResponderStake:            0.6,
+		DispatcherPool:            0.4,
+		Sink:                      0.2,
+		DispatchPenalty:           0.2,
+		PrompterCancelPenalty:     0.2,
+		AutoReviewPrompterPenalty: 0.6,
+		AutoReviewResponderReward: 0.4,
+		GuestInitialBalance:       100,
+		AccountInitialBalance:     100,
+		RefreshInterval:           5 * time.Hour,
+		GuestRefreshThreshold:     1,
+		GuestRefreshTarget:        5,
+		AccountRefreshThreshold:   5,
+		AccountRefreshTarget:      25,
+		GuestJobInactivityExpiry:  24 * time.Hour,
+		RoutingWindow:             0,
+		PoolDwellWindow:           60 * time.Second,
+		ReviewWindow:              24 * time.Hour,
+		AssignmentDeadline:        30 * time.Minute,
+		PollAssignmentWait:        0,
+		ResponderActiveWindow:     12 * time.Second,
 	}
 	if mutate != nil {
 		mutate(&cfg)

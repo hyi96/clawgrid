@@ -26,8 +26,7 @@ SET status = 'system_pool',
     routing_cycle_count = routing_cycle_count + 1
 WHERE status = 'routing'
   AND response_message_id IS NULL
-  AND routing_ends_at <= now()
-  AND expires_at > now();`)
+  AND routing_ends_at <= now();`)
 	if err != nil {
 		return 0, err
 	}
@@ -43,8 +42,7 @@ SET status = 'routing',
 WHERE status = 'system_pool'
   AND response_message_id IS NULL
   AND (claim_expires_at IS NULL OR claim_expires_at <= now())
-  AND last_system_pool_entered_at <= now() - make_interval(secs => $2::int)
-  AND expires_at > now() + make_interval(secs => $1::int);`, int(s.Cfg.RoutingWindow.Seconds()), int(s.Cfg.PoolDwellWindow.Seconds()))
+  AND last_system_pool_entered_at <= now() - make_interval(secs => $2::int);`, int(s.Cfg.RoutingWindow.Seconds()), int(s.Cfg.PoolDwellWindow.Seconds()))
 	if err != nil {
 		return 0, err
 	}
@@ -103,8 +101,7 @@ UPDATE jobs
 SET status = 'system_pool',
     last_system_pool_entered_at = now()
 WHERE id = $1
-  AND response_message_id IS NULL
-  AND expires_at > now()`, item.jobID); err != nil {
+  AND response_message_id IS NULL`, item.jobID); err != nil {
 			return 0, err
 		}
 		if err := s.slashResponderStakeTx(ctx, tx, item.jobID, domain.OwnerType(item.responderOwnerType), item.responderOwnerID, "responder_stake_slashed_timeout"); err != nil {
@@ -154,60 +151,11 @@ FOR UPDATE`)
 }
 
 func (s *Service) ProcessExpiry(ctx context.Context) (int64, error) {
-	res, err := s.DB.Exec(ctx, `
-UPDATE jobs j
-SET status = 'expired'
-WHERE status IN ('routing', 'assigned', 'system_pool')
-  AND response_message_id IS NULL
-  AND expires_at <= now()
-  AND NOT (
-    (j.status = 'assigned' AND EXISTS(
-      SELECT 1 FROM assignments a
-      WHERE a.job_id = j.id
-        AND a.status = 'active'
-    ))
-    OR
-    (j.status = 'system_pool'
-      AND j.claim_owner_type IS NOT NULL
-      AND j.claim_owner_id IS NOT NULL
-      AND j.claim_expires_at > now())
-  );`)
-	if err != nil {
-		return 0, err
-	}
-	return res.RowsAffected(), nil
+	return 0, nil
 }
 
 func (s *Service) ProcessGuestExpiry(ctx context.Context) (int64, error) {
-	res, err := s.DB.Exec(ctx, `
-UPDATE jobs j
-SET status = 'expired'
-FROM sessions s
-LEFT JOIN guest_sessions g ON g.id = s.owner_id
-WHERE j.session_id = s.id
-  AND s.owner_type = 'guest'
-  AND j.response_message_id IS NULL
-  AND j.status IN ('routing', 'assigned', 'system_pool')
-  AND (
-    g.revoked_at IS NOT NULL OR
-    g.last_seen_at <= now() - make_interval(hours => $1::int)
-  )
-  AND NOT (
-    (j.status = 'assigned' AND EXISTS(
-      SELECT 1 FROM assignments a
-      WHERE a.job_id = j.id
-        AND a.status = 'active'
-    ))
-    OR
-    (j.status = 'system_pool'
-      AND j.claim_owner_type IS NOT NULL
-      AND j.claim_owner_id IS NOT NULL
-      AND j.claim_expires_at > now())
-  );`, int(s.Cfg.GuestJobInactivityExpiry.Hours()))
-	if err != nil {
-		return 0, err
-	}
-	return res.RowsAffected(), nil
+	return 0, nil
 }
 
 func (s *Service) ProcessAutoReview(ctx context.Context) (int64, error) {
@@ -218,7 +166,7 @@ func (s *Service) ProcessAutoReview(ctx context.Context) (int64, error) {
 	defer tx.Rollback(ctx)
 	type autoReviewCandidate struct {
 		jobID              string
-		tipAmount          float64
+		sessionID          string
 		prompterOwnerType  string
 		prompterOwnerID    string
 		responderOwnerType string
@@ -226,7 +174,7 @@ func (s *Service) ProcessAutoReview(ctx context.Context) (int64, error) {
 	}
 
 	rows, err := tx.Query(ctx, `
-SELECT j.id, j.tip_amount, j.owner_type, j.owner_id, m.owner_type, m.owner_id
+SELECT j.id, j.session_id, j.owner_type, j.owner_id, m.owner_type, m.owner_id
 FROM jobs j
 JOIN messages m ON m.id = j.response_message_id
 WHERE j.response_message_id IS NOT NULL
@@ -242,7 +190,7 @@ FOR UPDATE OF j`)
 	var affected int64
 	for rows.Next() {
 		var item autoReviewCandidate
-		if err := rows.Scan(&item.jobID, &item.tipAmount, &item.prompterOwnerType, &item.prompterOwnerID, &item.responderOwnerType, &item.responderOwnerID); err != nil {
+		if err := rows.Scan(&item.jobID, &item.sessionID, &item.prompterOwnerType, &item.prompterOwnerID, &item.responderOwnerType, &item.responderOwnerID); err != nil {
 			return 0, err
 		}
 		candidates = append(candidates, item)
@@ -255,16 +203,28 @@ FOR UPDATE OF j`)
 		if _, err := tx.Exec(ctx, `UPDATE jobs SET prompter_vote = 'auto', status = 'auto_settled' WHERE id = $1`, item.jobID); err != nil {
 			return 0, err
 		}
-		if item.tipAmount > 0 {
-			if err := s.adjustWalletTx(ctx, tx, domain.OwnerType(item.prompterOwnerType), item.prompterOwnerID, item.tipAmount); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO messages(id, session_id, owner_type, owner_id, type, role, content) VALUES ($1,$2,$3,$4,'feedback','prompter',$5)`,
+			domain.NewID("msg"), item.sessionID, item.prompterOwnerType, item.prompterOwnerID, "no feedback"); err != nil {
+			return 0, err
+		}
+		if s.Cfg.AutoReviewPrompterPenalty > 0 {
+			if err := s.adjustWalletTx(ctx, tx, domain.OwnerType(item.prompterOwnerType), item.prompterOwnerID, -s.Cfg.AutoReviewPrompterPenalty); err != nil {
 				return 0, err
 			}
-			if err := s.ledgerTx(ctx, tx, domain.OwnerType(item.prompterOwnerType), item.prompterOwnerID, item.tipAmount, "tip_auto_settle_refund", &item.jobID, nil); err != nil {
+			if err := s.ledgerTx(ctx, tx, domain.OwnerType(item.prompterOwnerType), item.prompterOwnerID, -s.Cfg.AutoReviewPrompterPenalty, "auto_review_prompter_penalty", &item.jobID, nil); err != nil {
 				return 0, err
 			}
 		}
 		if err := s.refundResponderStakeTx(ctx, tx, item.jobID, domain.OwnerType(item.responderOwnerType), item.responderOwnerID); err != nil {
 			return 0, err
+		}
+		if s.Cfg.AutoReviewResponderReward > 0 {
+			if err := s.adjustWalletTx(ctx, tx, domain.OwnerType(item.responderOwnerType), item.responderOwnerID, s.Cfg.AutoReviewResponderReward); err != nil {
+				return 0, err
+			}
+			if err := s.ledgerTx(ctx, tx, domain.OwnerType(item.responderOwnerType), item.responderOwnerID, s.Cfg.AutoReviewResponderReward, "auto_review_responder_reward", &item.jobID, nil); err != nil {
+				return 0, err
+			}
 		}
 		affected++
 	}

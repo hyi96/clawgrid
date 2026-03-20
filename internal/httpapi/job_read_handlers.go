@@ -114,48 +114,63 @@ LIMIT 200`, string(actor.OwnerType), actor.OwnerID, status, sessionID)
 	respondJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
-func (s *Server) handleRoutingJobs(w http.ResponseWriter, r *http.Request, _ domain.Actor) {
+func (s *Server) handleRoutingJobs(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
 	if err := s.syncJobQueues(r.Context()); err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if err := s.markDispatcherActivity(r.Context(), actor); err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	activeDispatchers, err := s.recentActiveDispatchers(r.Context())
+	if err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	bandSize := dispatchBandSize(activeDispatchers, maxDispatchRoutingJobs, dispatchJobsBandBase)
 	rows, err := s.db.Query(r.Context(), `
 SELECT j.id, j.session_id, j.routing_cycle_count, j.last_routing_entered_at, j.routing_ends_at, COALESCE(sess.title, ''), j.tip_amount, COALESCE(NULLIF(j.metadata_json->>'time_limit_minutes', '')::int, 0)
 FROM jobs j
 JOIN sessions sess ON sess.id = j.session_id
 WHERE j.status = 'routing'
   AND j.response_message_id IS NULL
-ORDER BY j.created_at ASC
-LIMIT $1`, maxDispatchRoutingJobs)
+ORDER BY j.routing_cycle_count DESC, j.tip_amount DESC, j.created_at ASC
+LIMIT $1`, bandSize)
 	if err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	defer rows.Close()
-	items := []map[string]any{}
+	candidates := []routingJobRow{}
 	for rows.Next() {
-		var id, sid, sessionTitle string
-		var tipAmount float64
-		var timeLimitMinutes int
-		var cycles int
-		var enteredAt, endsAt *time.Time
-		_ = rows.Scan(&id, &sid, &cycles, &enteredAt, &endsAt, &sessionTitle, &tipAmount, &timeLimitMinutes)
-		sessionSnippet, err := s.buildDispatchSessionSnippet(r.Context(), sid)
+		var row routingJobRow
+		_ = rows.Scan(&row.id, &row.sessionID, &row.cycles, &row.enteredAt, &row.endsAt, &row.sessionTitle, &row.tipAmount, &row.timeLimitMinutes)
+		candidates = append(candidates, row)
+	}
+	shuffleRoutingJobsForDispatcher(candidates, actor, time.Now())
+	if len(candidates) > maxDispatchRoutingJobs {
+		candidates = candidates[:maxDispatchRoutingJobs]
+	}
+
+	items := []map[string]any{}
+	for _, row := range candidates {
+		sessionSnippet, err := s.buildDispatchSessionSnippet(r.Context(), row.sessionID)
 		if err != nil {
 			respondErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		items = append(items, map[string]any{
-			"id":                  id,
-			"session_id":          sid,
-			"session_title":       sessionTitle,
+			"id":                  row.id,
+			"session_id":          row.sessionID,
+			"session_title":       row.sessionTitle,
 			"session_snippet":     sessionSnippet,
-			"tip_amount":          tipAmount,
-			"time_limit_minutes":  timeLimitMinutes,
-			"is_rotated":          cycles > 0,
-			"routing_cycle_count": cycles,
-			"routing_started_at":  enteredAt,
-			"routing_ends_at":     endsAt,
+			"tip_amount":          row.tipAmount,
+			"time_limit_minutes":  row.timeLimitMinutes,
+			"is_rotated":          row.cycles > 0,
+			"routing_cycle_count": row.cycles,
+			"routing_started_at":  row.enteredAt,
+			"routing_ends_at":     row.endsAt,
 		})
 	}
 	respondJSON(w, http.StatusOK, map[string]any{"items": items})

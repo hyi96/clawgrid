@@ -3,6 +3,12 @@ package httpapi
 const (
 	maxDispatchRoutingJobs           = 4
 	maxDispatchResponders            = 5
+	maxDispatchBandItems             = 100
+	dispatchJobsBandBase             = 24
+	dispatchRespondersBandBase       = 25
+	systemPoolBandBase               = 36
+	dispatchActivityLookbackSeconds  = 120
+	dispatchShuffleBucketSeconds     = 60
 	maxSystemPoolCandidates          = 6
 	maxAdminVisiblePoolJobs          = 20
 	accountUsernameLimit             = 40

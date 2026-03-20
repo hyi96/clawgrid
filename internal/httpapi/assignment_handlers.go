@@ -22,14 +22,35 @@ func (s *Server) handleAssignmentsCreate(w http.ResponseWriter, r *http.Request,
 		respondErr(w, http.StatusBadRequest, "bad body")
 		return
 	}
+	if body.JobID == "" || body.ResponderOwnerID == "" {
+		respondErr(w, http.StatusBadRequest, "bad body")
+		return
+	}
+	responderOwnerType := domain.OwnerAccount
+	if body.ResponderOwnerType != "" {
+		responderOwnerType = domain.OwnerType(body.ResponderOwnerType)
+	}
+	if !validOwnerType(responderOwnerType) {
+		respondErr(w, http.StatusBadRequest, "invalid_responder_owner_type")
+		return
+	}
 	tx, err := s.db.Begin(r.Context())
 	if err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	defer tx.Rollback(r.Context())
-	if err := lockResponderActorTx(r.Context(), tx, domain.OwnerType(body.ResponderOwnerType), body.ResponderOwnerID); err != nil {
+	if err := lockResponderActorTx(r.Context(), tx, responderOwnerType, body.ResponderOwnerID); err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	responderExists, err := responderActorExistsTx(r.Context(), tx, responderOwnerType, body.ResponderOwnerID)
+	if err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !responderExists {
+		respondErr(w, http.StatusNotFound, "responder_not_found")
 		return
 	}
 
@@ -55,13 +76,13 @@ FOR UPDATE`, body.JobID, int(s.cfg.AssignmentDeadline.Minutes())).Scan(&jobOwner
 		actor.OwnerID,
 		jobOwnerType,
 		jobOwnerID,
-		body.ResponderOwnerType,
+		string(responderOwnerType),
 		body.ResponderOwnerID,
 	); guard != "" {
 		respondErr(w, http.StatusBadRequest, guard)
 		return
 	}
-	responderBusy, err := responderHasActiveWorkTx(r.Context(), tx, domain.OwnerType(body.ResponderOwnerType), body.ResponderOwnerID, "")
+	responderBusy, err := responderHasActiveWorkTx(r.Context(), tx, responderOwnerType, body.ResponderOwnerID, "")
 	if err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -70,7 +91,7 @@ FOR UPDATE`, body.JobID, int(s.cfg.AssignmentDeadline.Minutes())).Scan(&jobOwner
 		respondErr(w, http.StatusConflict, "responder_busy")
 		return
 	}
-	if err := s.holdResponderStake(r.Context(), tx, body.JobID, domain.OwnerType(body.ResponderOwnerType), body.ResponderOwnerID); err != nil {
+	if err := s.holdResponderStake(r.Context(), tx, body.JobID, responderOwnerType, body.ResponderOwnerID); err != nil {
 		if err.Error() == "insufficient_balance" {
 			respondErr(w, http.StatusPaymentRequired, "responder_insufficient_stake_balance")
 			return
@@ -82,7 +103,7 @@ FOR UPDATE`, body.JobID, int(s.cfg.AssignmentDeadline.Minutes())).Scan(&jobOwner
 	_, err = tx.Exec(r.Context(), `
 INSERT INTO assignments(id, job_id, dispatcher_owner_type, dispatcher_owner_id, responder_owner_type, responder_owner_id, deadline_at, status)
 VALUES ($1,$2,$3,$4,$5,$6, now() + make_interval(mins => $7::int), 'active')`,
-		id, body.JobID, string(actor.OwnerType), actor.OwnerID, body.ResponderOwnerType, body.ResponderOwnerID, timeLimitMinutes)
+		id, body.JobID, string(actor.OwnerType), actor.OwnerID, string(responderOwnerType), body.ResponderOwnerID, timeLimitMinutes)
 	if err != nil {
 		respondErr(w, http.StatusConflict, "assignment_conflict")
 		return

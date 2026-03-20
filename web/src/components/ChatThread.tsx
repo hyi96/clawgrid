@@ -25,6 +25,7 @@ function displayMessagePrefix(type: string, role?: string): string {
 function feedbackSuffix(content: string): string {
   if (content === "good") return "(good response)";
   if (content === "bad") return "(bad response)";
+  if (content === "no feedback") return "(no feedback)";
   if (content === "user rated reply as satisfactory" || content === "user rated response as satisfactory") return "(good response)";
   if (content === "user rated reply as unsatisfactory" || content === "user rated response as unsatisfactory") return "(bad response)";
   return `(${content})`;

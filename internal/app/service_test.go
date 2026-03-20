@@ -245,7 +245,7 @@ func TestServiceProcessAssignmentTimeouts(t *testing.T) {
 	}
 }
 
-func TestServiceProcessExpiry(t *testing.T) {
+func TestServiceProcessExpiryDoesNothing(t *testing.T) {
 	t.Parallel()
 
 	h := newServiceHarness(t, nil)
@@ -326,17 +326,17 @@ func TestServiceProcessExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProcessExpiry: %v", err)
 	}
-	if affected != 3 {
-		t.Fatalf("affected = %d, want 3", affected)
+	if affected != 0 {
+		t.Fatalf("affected = %d, want 0", affected)
 	}
-	if got := h.jobStatus(t, routingID); got != "expired" {
-		t.Fatalf("routing job status = %q, want %q", got, "expired")
+	if got := h.jobStatus(t, routingID); got != "routing" {
+		t.Fatalf("routing job status = %q, want %q", got, "routing")
 	}
-	if got := h.jobStatus(t, assignedID); got != "expired" {
-		t.Fatalf("assigned job status = %q, want %q", got, "expired")
+	if got := h.jobStatus(t, assignedID); got != "assigned" {
+		t.Fatalf("assigned job status = %q, want %q", got, "assigned")
 	}
-	if got := h.jobStatus(t, systemPoolID); got != "expired" {
-		t.Fatalf("system pool job status = %q, want %q", got, "expired")
+	if got := h.jobStatus(t, systemPoolID); got != "system_pool" {
+		t.Fatalf("system pool job status = %q, want %q", got, "system_pool")
 	}
 	if got := h.jobStatus(t, activeAssignedID); got != "assigned" {
 		t.Fatalf("active assigned job status = %q, want %q", got, "assigned")
@@ -358,7 +358,7 @@ func TestServiceProcessExpiry(t *testing.T) {
 	}
 }
 
-func TestServiceProcessGuestExpiry(t *testing.T) {
+func TestServiceProcessGuestExpiryDoesNothing(t *testing.T) {
 	t.Parallel()
 
 	h := newServiceHarness(t, nil)
@@ -449,14 +449,14 @@ func TestServiceProcessGuestExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProcessGuestExpiry: %v", err)
 	}
-	if affected != 2 {
-		t.Fatalf("affected = %d, want 2", affected)
+	if affected != 0 {
+		t.Fatalf("affected = %d, want 0", affected)
 	}
-	if got := h.jobStatus(t, oldJobID); got != "expired" {
-		t.Fatalf("old guest job status = %q, want %q", got, "expired")
+	if got := h.jobStatus(t, oldJobID); got != "routing" {
+		t.Fatalf("old guest job status = %q, want %q", got, "routing")
 	}
-	if got := h.jobStatus(t, revokedJobID); got != "expired" {
-		t.Fatalf("revoked guest job status = %q, want %q", got, "expired")
+	if got := h.jobStatus(t, revokedJobID); got != "assigned" {
+		t.Fatalf("revoked guest job status = %q, want %q", got, "assigned")
 	}
 	if got := h.jobStatus(t, activeAssignedGuestJobID); got != "assigned" {
 		t.Fatalf("active assigned guest job status = %q, want %q", got, "assigned")
@@ -475,7 +475,7 @@ func TestServiceProcessGuestExpiry(t *testing.T) {
 	}
 }
 
-func TestServiceProcessAutoReview(t *testing.T) {
+func TestServiceProcessAutoReviewPenalizesPrompterAndRewardsResponder(t *testing.T) {
 	t.Parallel()
 
 	h := newServiceHarness(t, nil)
@@ -528,14 +528,17 @@ func TestServiceProcessAutoReview(t *testing.T) {
 	if got := h.jobVote(t, dueJobID); got != "auto" {
 		t.Fatalf("due job vote = %q, want %q", got, "auto")
 	}
+	if got := h.feedbackCountByContent(t, sessionID, "no feedback"); got != 1 {
+		t.Fatalf("no-feedback message count = %d, want 1", got)
+	}
 	if got := h.jobStakeStatus(t, dueJobID); got != "returned" {
 		t.Fatalf("due job stake status = %q, want %q", got, "returned")
 	}
-	if got := h.walletBalance(t, "account", responderID); got != 5.0 {
-		t.Fatalf("responder balance = %v, want %v", got, 5.0)
+	if got := h.walletBalance(t, "account", responderID); got != 5.4 {
+		t.Fatalf("responder balance = %v, want %v", got, 5.4)
 	}
-	if got := h.walletBalance(t, "account", ownerID); got != 1.6 {
-		t.Fatalf("prompter balance = %v, want %v", got, 1.6)
+	if got := h.walletBalance(t, "account", ownerID); got != 0.4 {
+		t.Fatalf("prompter balance = %v, want %v", got, 0.4)
 	}
 	if got := h.jobStatus(t, futureJobID); got != "assigned" {
 		t.Fatalf("future job status = %q, want %q", got, "assigned")
@@ -618,34 +621,34 @@ func newServiceHarness(t *testing.T, mutate func(*config.Config)) *serviceHarnes
 	}
 
 	cfg := config.Config{
-		DatabaseURL:              appURL,
-		GuestTokenSecret:         "service-test-secret",
-		AdminPathToken:           "service-test-admin",
-		SignupPathToken:          "clawgrid-signup",
-		WorkerTick:               time.Second,
-		PostFee:                  2.0,
-		ResponderPool:            1.4,
-		ResponderStake:           0.6,
-		DispatcherPool:           0.4,
-		Sink:                     0.2,
-		DispatchPenalty:          0.2,
-		ResponderPenalty:         0.2,
-		PrompterCancelPenalty:    0.2,
-		GuestInitialBalance:      100,
-		AccountInitialBalance:    100,
-		RefreshInterval:          5 * time.Hour,
-		GuestRefreshThreshold:    1,
-		GuestRefreshTarget:       5,
-		AccountRefreshThreshold:  5,
-		AccountRefreshTarget:     25,
-		GuestJobInactivityExpiry: 24 * time.Hour,
-		RoutingWindow:            30 * time.Second,
-		PoolDwellWindow:          30 * time.Second,
-		JobExpiry:                24 * time.Hour,
-		ReviewWindow:             24 * time.Hour,
-		AssignmentDeadline:       30 * time.Minute,
-		PollAssignmentWait:       30 * time.Second,
-		ResponderActiveWindow:    12 * time.Second,
+		DatabaseURL:               appURL,
+		AuthTokenSecret:           "service-test-secret",
+		AdminPathToken:            "service-test-admin",
+		SignupPathToken:           "clawgrid-signup",
+		WorkerTick:                time.Second,
+		PostFee:                   2.0,
+		ResponderPool:             1.4,
+		ResponderStake:            0.6,
+		DispatcherPool:            0.4,
+		Sink:                      0.2,
+		DispatchPenalty:           0.2,
+		PrompterCancelPenalty:     0.2,
+		AutoReviewPrompterPenalty: 0.6,
+		AutoReviewResponderReward: 0.4,
+		GuestInitialBalance:       100,
+		AccountInitialBalance:     100,
+		RefreshInterval:           5 * time.Hour,
+		GuestRefreshThreshold:     1,
+		GuestRefreshTarget:        5,
+		AccountRefreshThreshold:   5,
+		AccountRefreshTarget:      25,
+		GuestJobInactivityExpiry:  24 * time.Hour,
+		RoutingWindow:             30 * time.Second,
+		PoolDwellWindow:           30 * time.Second,
+		ReviewWindow:              24 * time.Hour,
+		AssignmentDeadline:        30 * time.Minute,
+		PollAssignmentWait:        30 * time.Second,
+		ResponderActiveWindow:     12 * time.Second,
 	}
 	if mutate != nil {
 		mutate(&cfg)
@@ -829,6 +832,15 @@ func (h *serviceHarness) jobStakeStatus(t *testing.T, jobID string) string {
 		t.Fatalf("jobStakeStatus: %v", err)
 	}
 	return status
+}
+
+func (h *serviceHarness) feedbackCountByContent(t *testing.T, sessionID, content string) int {
+	t.Helper()
+	var count int
+	if err := h.appPool.QueryRow(context.Background(), `SELECT COUNT(*)::int FROM messages WHERE session_id = $1 AND type = 'feedback' AND content = $2`, sessionID, content).Scan(&count); err != nil {
+		t.Fatalf("feedbackCountByContent: %v", err)
+	}
+	return count
 }
 
 func (h *serviceHarness) execSQL(t *testing.T, query string, args ...any) {

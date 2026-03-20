@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"clawgrid/internal/domain"
@@ -21,7 +20,7 @@ func (s *Server) adminPathToken() string {
 	if s.cfg.AdminPathToken != "" {
 		return s.cfg.AdminPathToken
 	}
-	sum := sha256.Sum256([]byte("clawgrid-admin:" + s.cfg.GuestTokenSecret))
+	sum := sha256.Sum256([]byte("clawgrid-admin:" + s.cfg.AuthTokenSecret))
 	return hex.EncodeToString(sum[:])[:24]
 }
 
@@ -60,27 +59,6 @@ func (s *Server) resolveActor(r *http.Request) (domain.Actor, error) {
 			AuthCredentialID:   credentialID,
 		}, nil
 	}
-	guestToken := ""
-	if cookie, err := r.Cookie(guestSessionCookieName); err == nil {
-		guestToken = strings.TrimSpace(cookie.Value)
-	}
-	if guestToken != "" {
-		if !s.allowGuestBrowserRequest(r) {
-			return domain.Actor{}, errors.New("guest_frontend_only")
-		}
-		h := hash(s.cfg.GuestTokenSecret + guestToken)
-		var guestID string
-		err := s.db.QueryRow(ctx, `SELECT id FROM guest_sessions WHERE guest_token_hash = $1 AND revoked_at IS NULL`, h).Scan(&guestID)
-		if err != nil {
-			return domain.Actor{}, errors.New("invalid guest session")
-		}
-		_, _ = s.db.Exec(ctx, `UPDATE guest_sessions SET last_seen_at = now() WHERE id = $1`, guestID)
-		return domain.Actor{
-			OwnerType:          domain.OwnerGuest,
-			OwnerID:            guestID,
-			AuthCredentialType: domain.AuthCredentialGuestToken,
-		}, nil
-	}
 	return domain.Actor{}, errors.New("missing auth")
 }
 
@@ -95,7 +73,7 @@ func (s *Server) resolveAccountFromBearer(ctx context.Context, token string) (st
 		return "", domain.AuthCredentialNone, "", errors.New("invalid auth token")
 	}
 
-	h := hash(s.cfg.GuestTokenSecret + token)
+	h := hash(s.cfg.AuthTokenSecret + token)
 	err = s.db.QueryRow(ctx, `SELECT account_id, id FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL`, h).Scan(&accountID, &keyID)
 	if err == nil {
 		_, _ = s.db.Exec(ctx, `UPDATE api_keys SET last_used_at = now() WHERE id = $1`, keyID)
@@ -112,27 +90,6 @@ func (s *Server) resolveAccountFromBearer(ctx context.Context, token string) (st
 		return accountID, domain.AuthCredentialAccountSession, sessionID, nil
 	}
 	return "", domain.AuthCredentialNone, "", errors.New("invalid auth token")
-}
-
-func (s *Server) allowGuestBrowserRequest(r *http.Request) bool {
-	allowedOrigin := strings.TrimSpace(s.cfg.FrontendOrigin)
-	if allowedOrigin == "" {
-		return true
-	}
-	if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
-		return sameOrigin(origin, allowedOrigin)
-	}
-	if referer := strings.TrimSpace(r.Header.Get("Referer")); referer != "" {
-		u, err := url.Parse(referer)
-		if err == nil && u.Scheme != "" && u.Host != "" {
-			return sameOrigin(u.Scheme+"://"+u.Host, allowedOrigin)
-		}
-	}
-	return false
-}
-
-func sameOrigin(a, b string) bool {
-	return strings.TrimRight(strings.ToLower(strings.TrimSpace(a)), "/") == strings.TrimRight(strings.ToLower(strings.TrimSpace(b)), "/")
 }
 
 func hash(v string) string {

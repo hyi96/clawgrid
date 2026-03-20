@@ -3,13 +3,12 @@ import { ChatComposer } from "./components/ChatComposer";
 import { ChatThread } from "./components/ChatThread";
 import { TurnstileWidget } from "./components/TurnstileWidget";
 
-type OwnerType = "guest" | "account";
+type OwnerType = "account";
 type Page = "ask" | "dispatch" | "respond" | "leaderboard" | "account";
 type RespondState = "poll" | "pool" | "active";
 
-type GuestAuth = { mode: "guest"; guestId: string };
 type AccountAuth = { mode: "account"; token: string };
-type AuthState = GuestAuth | AccountAuth;
+type AuthState = AccountAuth;
 
 type SessionItem = {
   id: string;
@@ -143,7 +142,7 @@ const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "http:
 const ACCOUNT_REGISTER_PATH =
   (import.meta.env.VITE_ACCOUNT_REGISTER_PATH as string | undefined) ?? "/_private/clawgrid-signup/accounts/register";
 const TURNSTILE_SITEKEY = (import.meta.env.VITE_TURNSTILE_SITEKEY as string | undefined) ?? "";
-const AUTH_KEY = "clawgrid_auth_v1";
+const AUTH_KEY = "clawgrid_auth_v2";
 const RESPOND_STATE_KEY_PREFIX = "clawgrid_respond_active_v1";
 const DISPATCH_JOB_SLOTS = 4;
 const DISPATCH_RESPONDER_SLOTS = 5;
@@ -187,12 +186,8 @@ function loadAuth(): AuthState | null {
   try {
     const parsed = JSON.parse(raw) as {
       mode?: string;
-      guestId?: string;
       token?: string;
     };
-    if (parsed.mode === "guest" && parsed.guestId) {
-      return { mode: "guest", guestId: parsed.guestId };
-    }
     if (parsed.mode === "account" && typeof parsed.token === "string" && parsed.token) {
       return { mode: "account", token: parsed.token };
     }
@@ -231,8 +226,7 @@ function formatCredits(v: number): string {
 
 function authIdentityKey(auth: AuthState | null): string | null {
   if (!auth) return null;
-  if (auth.mode === "account") return `account:${auth.token}`;
-  return `guest:${auth.guestId}`;
+  return `account:${auth.token}`;
 }
 
 function transcriptPrefix(messageType: string, role?: string): string {
@@ -244,6 +238,7 @@ function transcriptPrefix(messageType: string, role?: string): string {
 function feedbackTranscriptSuffix(content: string): string {
   if (content === "good") return "(good response)";
   if (content === "bad") return "(bad response)";
+  if (content === "no feedback") return "(no feedback)";
   if (content === "user rated reply as satisfactory" || content === "user rated response as satisfactory") return "(good response)";
   if (content === "user rated reply as unsatisfactory" || content === "user rated response as unsatisfactory") return "(bad response)";
   return `(${content})`;
@@ -777,7 +772,6 @@ function DispatchPage({ auth }: { auth: AuthState | null }) {
         method: "POST",
         body: JSON.stringify({
           job_id: jobID,
-          responder_owner_type: responder.owner_type,
           responder_owner_id: responder.owner_id,
         }),
       });
@@ -1403,7 +1397,7 @@ function LeaderboardPage() {
   );
 }
 
-function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: AuthState) => void }) {
+function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: AuthState | null) => void }) {
   const [loginNameInput, setLoginNameInput] = useState("");
   const [loginPasswordInput, setLoginPasswordInput] = useState("");
   const [nameInput, setNameInput] = useState("");
@@ -1420,7 +1414,7 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
   const [error, setError] = useState("");
   const [responderDescription, setResponderDescription] = useState("");
 
-  const isGuest = auth?.mode !== "account";
+  const isSignedOut = !auth;
   const signupNeedsTurnstile = TURNSTILE_SITEKEY.trim() !== "";
   const responderDescriptionChars = Array.from(responderDescription).length;
 
@@ -1582,12 +1576,12 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
     }
   };
 
-  if (isGuest) {
+  if (isSignedOut) {
     return (
       <main className="account-layout guest">
         <section className="account-guest-card">
           <h2 className="account-title">welcome to clawgrid</h2>
-          <p className="account-subtext">sign in or create an account to unlock api keys and higher limits.</p>
+          <p className="account-subtext">an account is required to use clawgrid.</p>
           <div className="account-guest-auth-grid">
             <div className="account-guest-form">
               <p className="account-panel-label">sign in</p>
@@ -1769,7 +1763,7 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
 }
 
 function App() {
-  const [activePage, setActivePage] = useState<Page>("ask");
+  const [activePage, setActivePage] = useState<Page>("account");
   const [auth, setAuthState] = useState<AuthState | null>(null);
   const [booting, setBooting] = useState(true);
 
@@ -1777,49 +1771,33 @@ function App() {
     const bootstrap = async () => {
       const existing = loadAuth();
       if (existing) {
-        if (existing.mode === "account") {
-          try {
-            const me = await api<{ auth_credential_type?: string }>("/account/me", existing);
-            if (me.auth_credential_type === "api_key") {
-              saveAuth(null);
-            } else {
-              setAuthState(existing);
-              setBooting(false);
-              return;
-            }
-          } catch {
+        try {
+          const me = await api<{ auth_credential_type?: string }>("/account/me", existing);
+          if (me.auth_credential_type === "api_key") {
             saveAuth(null);
-          }
-        } else {
-          try {
-            await api<{ items: SessionItem[] }>("/sessions", existing);
+          } else {
             setAuthState(existing);
             setBooting(false);
             return;
-          } catch {
-            saveAuth(null);
           }
+        } catch {
+          saveAuth(null);
         }
       }
-      try {
-        const guest = await api<{ guest_id: string }>("/guest/sessions", null, { method: "POST" });
-        const authState: GuestAuth = { mode: "guest", guestId: guest.guest_id };
-        saveAuth(authState);
-        setAuthState(authState);
-      } finally {
-        setBooting(false);
-      }
+      setAuthState(null);
+      setBooting(false);
     };
     void bootstrap();
   }, []);
 
-  const setAuth = (next: AuthState) => {
+  const setAuth = (next: AuthState | null) => {
     saveAuth(next);
     setAuthState(next);
   };
 
   const renderPage = () => {
     if (booting) return <main className="placeholder-layout"><div className="placeholder-card">booting...</div></main>;
+    if (!auth && activePage !== "leaderboard" && activePage !== "account") return <AccountPage auth={null} setAuth={setAuth} />;
     if (activePage === "ask") return <AskPage auth={auth} />;
     if (activePage === "dispatch") return <DispatchPage auth={auth} />;
     if (activePage === "respond") return <RespondPage auth={auth} />;

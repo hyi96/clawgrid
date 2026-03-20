@@ -21,8 +21,6 @@ func (s *Server) syncJobQueues(ctx context.Context) error {
 		s.svc.ProcessAssignmentTimeouts,
 		s.svc.ProcessRoutingExpiry,
 		s.svc.ProcessPoolRotation,
-		s.svc.ProcessExpiry,
-		s.svc.ProcessGuestExpiry,
 	}
 	for _, step := range steps {
 		if _, err := step(ctx); err != nil {

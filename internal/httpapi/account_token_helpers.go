@@ -33,7 +33,7 @@ func (s *Server) createAPIKey(ctx context.Context, accountID, label string) (str
 	id := key
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO api_keys(id, account_id, key_hash, label) VALUES ($1,$2,$3,$4)`,
-		id, accountID, hash(s.cfg.GuestTokenSecret+key), label,
+		id, accountID, hash(s.cfg.AuthTokenSecret+key), label,
 	); err != nil {
 		return "", "", err
 	}
@@ -47,7 +47,7 @@ func (s *Server) createAccountSession(ctx context.Context, accountID string) (st
 	token := domain.NewID("csk")
 	if _, err := s.db.Exec(ctx,
 		`INSERT INTO account_sessions(id, account_id, token_hash) VALUES ($1,$2,$3)`,
-		domain.NewID("acs"), accountID, hash(s.cfg.GuestTokenSecret+token),
+		domain.NewID("acs"), accountID, hash(s.cfg.AuthTokenSecret+token),
 	); err != nil {
 		return "", err
 	}

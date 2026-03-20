@@ -347,8 +347,8 @@ func (s *Server) handleMessagesCreate(w http.ResponseWriter, r *http.Request, ac
 	}
 	if _, err := tx.Exec(r.Context(), `
 INSERT INTO jobs(id, session_id, request_message_id, owner_type, owner_id, status, activated_at, expires_at, routing_ends_at, tip_amount, post_fee_amount, last_routing_entered_at, metadata_json)
-VALUES ($1,$2,$3,$4,$5,'routing', now(), now() + make_interval(hours => $6::int), now() + make_interval(secs => $7::int), $8, $9, now(), $10)`,
-		jid, sid, mid, string(actor.OwnerType), actor.OwnerID, int(s.cfg.JobExpiry.Hours()), int(s.cfg.RoutingWindow.Seconds()), body.TipAmount, s.cfg.PostFee, metadata); err != nil {
+VALUES ($1,$2,$3,$4,$5,'routing', now(), now() + interval '100 years', now() + make_interval(secs => $6::int), $7, $8, now(), $9)`,
+		jid, sid, mid, string(actor.OwnerType), actor.OwnerID, int(s.cfg.RoutingWindow.Seconds()), body.TipAmount, s.cfg.PostFee, metadata); err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

@@ -43,8 +43,6 @@ func runOnce(ctx context.Context, svc *app.Service) error {
 		svc.ProcessPoolRotation,
 		svc.ProcessAssignmentTimeouts,
 		svc.ProcessAutoReview,
-		svc.ProcessExpiry,
-		svc.ProcessGuestExpiry,
 		svc.ProcessWalletRefresh,
 	}
 	for _, fn := range fns {

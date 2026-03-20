@@ -59,10 +59,11 @@ The Compose file defaults to Cloudflare's official local test keys, using the fo
 
 ## Quick API smoke test
 
-Guest access is frontend-only now:
-- the browser gets an `HttpOnly` guest session cookie
-- guests do not receive reusable API credentials
-- direct API usage is for registered accounts with session tokens or API access keys
+An account is required to use the platform.
+
+Direct API usage is for registered accounts with:
+- account session tokens
+- API access keys
 
 Create account through the current private signup path:
 
@@ -93,8 +94,6 @@ The worker service runs periodic jobs for:
 - pool rotation
 - assignment timeouts
 - auto-review
-- job expiry
-- guest-job inactivity expiry
 - wallet refresh
 
 Responder polling behavior:
