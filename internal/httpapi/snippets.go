@@ -42,26 +42,41 @@ func buildSessionSnippetFromNewestFirstWithSourceTrimmed(messages []dispatchSnip
 		selected[latestResponderIdx] = true
 	}
 
-	recentDesc := make([]int, 0, 2)
-	for i := len(turns) - 1; i >= 0 && len(recentDesc) < 2; i-- {
-		if selected[i] {
-			continue
-		}
-		recentDesc = append(recentDesc, i)
-		selected[i] = true
-	}
-	recentIndices := reverseIntsCopy(recentDesc)
-
 	anchorIdx := oldestRemainingSnippetTurnIndex(turns, selected, "prompter")
 	if anchorIdx == -1 {
 		anchorIdx = oldestRemainingSnippetTurnIndex(turns, selected, "")
+	}
+	if anchorIdx >= 0 {
+		selected[anchorIdx] = true
+	}
+
+	recentIndicesDesc := make([]int, 0, len(turns))
+	for i := len(turns) - 1; i >= 0; i-- {
+		if selected[i] {
+			continue
+		}
+		if anchorIdx >= 0 && i < anchorIdx {
+			continue
+		}
+		recentIndicesDesc = append(recentIndicesDesc, i)
 	}
 
 	latestPrompterBudget, latestResponderBudget, recentBudget, anchorBudget := allocateSnippetBudgets(
 		latestPrompterIdx >= 0,
 		latestResponderIdx >= 0,
-		len(recentIndices) > 0,
+		len(recentIndicesDesc) > 0,
 		anchorIdx >= 0,
+	)
+	latestPrompterBudget, latestResponderBudget, recentBudget, anchorBudget = rebalanceSnippetBudgetsForShortTurns(
+		turns,
+		latestPrompterIdx,
+		latestPrompterBudget,
+		latestResponderIdx,
+		latestResponderBudget,
+		anchorIdx,
+		anchorBudget,
+		recentIndicesDesc,
+		recentBudget,
 	)
 
 	rendered := make(map[int]string, 4)
@@ -71,7 +86,7 @@ func buildSessionSnippetFromNewestFirstWithSourceTrimmed(messages []dispatchSnip
 	if latestResponderIdx >= 0 {
 		rendered[latestResponderIdx] = clipSnippetFragment(dispatchSnippetTurnLine(turns[latestResponderIdx]), latestResponderBudget)
 	}
-	for idx, line := range clipSnippetTurnGroup(turns, recentIndices, recentBudget) {
+	for idx, line := range clipSnippetTurnGroup(turns, recentIndicesDesc, recentBudget) {
 		rendered[idx] = line
 	}
 	if anchorIdx >= 0 {
@@ -152,6 +167,45 @@ func allocateSnippetBudgets(hasLatestPrompter, hasLatestResponder, hasRecent, ha
 	return latestPrompterBudget, latestResponderBudget, recentBudget, anchorBudget
 }
 
+func rebalanceSnippetBudgetsForShortTurns(
+	turns []dispatchSnippetTurn,
+	latestPrompterIdx, latestPrompterBudget int,
+	latestResponderIdx, latestResponderBudget int,
+	anchorIdx, anchorBudget int,
+	recentIndicesDesc []int,
+	recentBudget int,
+) (int, int, int, int) {
+	if len(recentIndicesDesc) == 0 {
+		return latestPrompterBudget, latestResponderBudget, recentBudget, anchorBudget
+	}
+
+	unused := 0
+	if latestPrompterIdx >= 0 {
+		unused += snippetUnusedBudget(dispatchSnippetTurnLine(turns[latestPrompterIdx]), latestPrompterBudget)
+	}
+	if latestResponderIdx >= 0 {
+		unused += snippetUnusedBudget(dispatchSnippetTurnLine(turns[latestResponderIdx]), latestResponderBudget)
+	}
+	if anchorIdx >= 0 {
+		unused += snippetUnusedBudget(dispatchSnippetTurnLine(turns[anchorIdx]), anchorBudget)
+	}
+	if unused <= 0 {
+		return latestPrompterBudget, latestResponderBudget, recentBudget, anchorBudget
+	}
+	return latestPrompterBudget, latestResponderBudget, recentBudget + unused, anchorBudget
+}
+
+func snippetUnusedBudget(line string, budget int) int {
+	if budget <= 0 {
+		return 0
+	}
+	lineLen := utf8.RuneCountInString(strings.TrimSpace(line))
+	if lineLen >= budget {
+		return 0
+	}
+	return budget - lineLen
+}
+
 func mergeSnippetTurns(messagesNewestFirst []dispatchSnippetMessage) []dispatchSnippetTurn {
 	turns := make([]dispatchSnippetTurn, 0, len(messagesNewestFirst))
 	for i := len(messagesNewestFirst) - 1; i >= 0; i-- {
@@ -193,19 +247,28 @@ func oldestRemainingSnippetTurnIndex(turns []dispatchSnippetTurn, selected map[i
 	return -1
 }
 
-func clipSnippetTurnGroup(turns []dispatchSnippetTurn, indices []int, totalBudget int) map[int]string {
-	lines := make(map[int]string, len(indices))
-	if len(indices) == 0 || totalBudget <= 0 {
+func clipSnippetTurnGroup(turns []dispatchSnippetTurn, indicesDesc []int, totalBudget int) map[int]string {
+	lines := make(map[int]string, len(indicesDesc))
+	if len(indicesDesc) == 0 || totalBudget <= 0 {
 		return lines
 	}
-	baseBudget := totalBudget / len(indices)
-	remainder := totalBudget % len(indices)
-	for i, idx := range indices {
-		budget := baseBudget
-		if i >= len(indices)-remainder {
-			budget++
+	remaining := totalBudget
+	for _, idx := range indicesDesc {
+		if remaining <= 0 {
+			break
 		}
-		lines[idx] = clipSnippetFragment(dispatchSnippetTurnLine(turns[idx]), budget)
+		line := dispatchSnippetTurnLine(turns[idx])
+		if line == "" {
+			continue
+		}
+		lineLen := utf8.RuneCountInString(line)
+		if lineLen <= remaining {
+			lines[idx] = line
+			remaining -= lineLen
+			continue
+		}
+		lines[idx] = clipSnippetFragment(line, remaining)
+		break
 	}
 	return lines
 }
@@ -285,14 +348,6 @@ func reverseStrings(values []string) {
 	for i, j := 0, len(values)-1; i < j; i, j = i+1, j-1 {
 		values[i], values[j] = values[j], values[i]
 	}
-}
-
-func reverseIntsCopy(values []int) []int {
-	out := make([]int, len(values))
-	for i := range values {
-		out[len(values)-1-i] = values[i]
-	}
-	return out
 }
 
 func (s *Server) buildDispatchSessionSnippet(ctx context.Context, sessionID string) (string, error) {

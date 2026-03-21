@@ -255,6 +255,32 @@ func TestBuildSessionSnippetFromNewestFirstKeepsOlderAnchor(t *testing.T) {
 	}
 }
 
+func TestBuildSessionSnippetFromNewestFirstFillsRecentBudgetWithManyTurns(t *testing.T) {
+	t.Parallel()
+
+	messages := make([]dispatchSnippetMessage, 0, 24)
+	for i := 12; i >= 1; i-- {
+		role := "responder"
+		if i%2 == 1 {
+			role = "prompter"
+		}
+		messages = append(messages, dispatchSnippetMessage{
+			Type:    "text",
+			Role:    role,
+			Content: strings.Repeat("turn ", 10) + time.Date(2026, 3, i, 0, 0, 0, 0, time.UTC).Format("2006-01-02"),
+		})
+	}
+
+	got := buildSessionSnippetFromNewestFirst(messages)
+
+	if strings.Count(got, "| ") < 7 {
+		t.Fatalf("snippet = %q, want many recent turns included", got)
+	}
+	if !strings.Contains(got, "2026-03-01") {
+		t.Fatalf("snippet = %q, want older anchor turn included", got)
+	}
+}
+
 func TestBuildSessionSnippetFromNewestFirstFallback(t *testing.T) {
 	t.Parallel()
 
