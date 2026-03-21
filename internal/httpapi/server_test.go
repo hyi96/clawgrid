@@ -195,12 +195,12 @@ func TestBuildSessionSnippetFromNewestFirst(t *testing.T) {
 	t.Parallel()
 
 	tooOld := strings.Repeat("x", dispatchSnippetSourceRuneLimit)
-	got := buildSessionSnippetFromNewestFirst([]dispatchSnippetMessage{
+	got := buildSessionSnippetFromNewestFirstWithSourceTrimmed([]dispatchSnippetMessage{
 		{Type: "text", Role: "prompter", Content: "latest prompt"},
 		{Type: "text", Role: "responder", Content: "latest reply"},
 		{Type: "feedback", Role: "prompter", Content: "user rated reply as satisfactory"},
 		{Type: "text", Role: "prompter", Content: tooOld},
-	})
+	}, true)
 
 	wantParts := []string{
 		"prompter: latest prompt",
@@ -216,6 +216,42 @@ func TestBuildSessionSnippetFromNewestFirst(t *testing.T) {
 	}
 	if !strings.HasPrefix(got, "...") {
 		t.Fatalf("snippet = %q, want older-context ellipsis prefix", got)
+	}
+}
+
+func TestBuildSessionSnippetFromNewestFirstMergesConsecutivePrompterTurns(t *testing.T) {
+	t.Parallel()
+
+	got := buildSessionSnippetFromNewestFirst([]dispatchSnippetMessage{
+		{Type: "text", Role: "prompter", Content: "second prompt"},
+		{Type: "text", Role: "prompter", Content: "first prompt"},
+	})
+
+	if !strings.Contains(got, "prompter: first prompt / second prompt") {
+		t.Fatalf("snippet = %q, want merged prompter turn", got)
+	}
+	if strings.Count(got, "prompter:") != 1 {
+		t.Fatalf("snippet = %q, want exactly one prompter label", got)
+	}
+}
+
+func TestBuildSessionSnippetFromNewestFirstKeepsOlderAnchor(t *testing.T) {
+	t.Parallel()
+
+	got := buildSessionSnippetFromNewestFirst([]dispatchSnippetMessage{
+		{Type: "text", Role: "prompter", Content: "latest prompt"},
+		{Type: "text", Role: "responder", Content: "latest reply"},
+		{Type: "text", Role: "prompter", Content: "recent prompt"},
+		{Type: "text", Role: "responder", Content: "recent reply"},
+		{Type: "text", Role: "prompter", Content: "anchor prompt"},
+		{Type: "text", Role: "responder", Content: "old dropped reply"},
+	})
+
+	if !strings.Contains(got, "prompter: anchor prompt") {
+		t.Fatalf("snippet = %q, want older anchor prompt", got)
+	}
+	if strings.Contains(got, "old dropped reply") {
+		t.Fatalf("snippet = %q, should omit older non-anchor turn", got)
 	}
 }
 
