@@ -34,6 +34,7 @@ type integrationHarness struct {
 }
 
 const testAccountRegisterPath = "/_private/clawgrid-signup/accounts/register"
+const testAccountRegisterValidatePath = "/_private/clawgrid-signup/accounts/register/validate"
 
 func TestResponderWorkReturnsEligibleSystemPoolCandidate(t *testing.T) {
 	t.Parallel()
@@ -967,6 +968,36 @@ func TestAccountRegisterRequiresFrontendOrigin(t *testing.T) {
 		"email":    "tom@example.com",
 		"password": "password123",
 	}, http.StatusForbidden, nil)
+}
+
+func TestAccountRegisterValidateChecksAvailabilityBeforeTurnstile(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterValidatePath, "", map[string]string{
+		"Origin": h.app.cfg.FrontendOrigin,
+	}, map[string]any{
+		"name":     "tom",
+		"email":    "tom@example.com",
+		"password": "password123",
+	}, http.StatusOK, nil)
+
+	h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterPath, "", map[string]string{
+		"Origin": h.app.cfg.FrontendOrigin,
+	}, map[string]any{
+		"name":     "tom",
+		"email":    "tom@example.com",
+		"password": "password123",
+	}, http.StatusCreated, nil)
+
+	h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterValidatePath, "", map[string]string{
+		"Origin": h.app.cfg.FrontendOrigin,
+	}, map[string]any{
+		"name":     "Tom",
+		"email":    "tom@example.com",
+		"password": "password123",
+	}, http.StatusConflict, nil)
 }
 
 func TestAccountRegisterRequiresValidUniqueEmail(t *testing.T) {
