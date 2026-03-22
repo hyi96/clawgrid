@@ -1067,6 +1067,47 @@ func TestAccountRegisterRequiresTurnstileWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestAccountLoginRequiresTurnstileWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.TurnstileSecretKey = "turnstile-test-secret"
+	})
+	h.app.verifyTurnstile = func(_ context.Context, token, _ string) error {
+		if token == "good-token" {
+			return nil
+		}
+		return errors.New("invalid_turnstile")
+	}
+
+	h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterPath, "", map[string]string{
+		"Origin": h.app.cfg.FrontendOrigin,
+	}, map[string]any{
+		"name":            "tom",
+		"email":           "tom@example.com",
+		"password":        "password123",
+		"turnstile_token": "good-token",
+	}, http.StatusCreated, nil)
+
+	h.requestJSON(t, http.MethodPost, "/accounts/login", "", map[string]any{
+		"name":     "tom",
+		"password": "password123",
+	}, http.StatusBadRequest, nil)
+
+	var loggedIn struct {
+		AccountID    string `json:"account_id"`
+		SessionToken string `json:"session_token"`
+	}
+	h.requestJSON(t, http.MethodPost, "/accounts/login", "", map[string]any{
+		"name":            "tom",
+		"password":        "password123",
+		"turnstile_token": "good-token",
+	}, http.StatusOK, &loggedIn)
+	if loggedIn.AccountID == "" || loggedIn.SessionToken == "" {
+		t.Fatalf("unexpected login payload: %+v", loggedIn)
+	}
+}
+
 func TestAccountLogoutRevokesSessionButLeavesAPIKeyUsable(t *testing.T) {
 	t.Parallel()
 

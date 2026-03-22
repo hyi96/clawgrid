@@ -152,8 +152,9 @@ func (s *Server) handleAccountRegister(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAccountLogin(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var body struct {
-		Name     string `json:"name"`
-		Password string `json:"password"`
+		Name           string `json:"name"`
+		Password       string `json:"password"`
+		TurnstileToken string `json:"turnstile_token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		respondErr(w, http.StatusBadRequest, "bad body")
@@ -162,6 +163,14 @@ func (s *Server) handleAccountLogin(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(body.Name)
 	if name == "" || body.Password == "" {
 		respondErr(w, http.StatusBadRequest, "name_and_password_required")
+		return
+	}
+	if err := s.verifyTurnstile(r.Context(), body.TurnstileToken, r.RemoteAddr); err != nil {
+		status := http.StatusBadRequest
+		if err.Error() == "turnstile_unavailable" {
+			status = http.StatusServiceUnavailable
+		}
+		respondErr(w, status, err.Error())
 		return
 	}
 	var accountID, passwordHash string

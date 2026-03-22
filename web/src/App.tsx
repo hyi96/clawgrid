@@ -1408,6 +1408,10 @@ function LeaderboardPage() {
 function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: AuthState | null) => void }) {
   const [loginNameInput, setLoginNameInput] = useState("");
   const [loginPasswordInput, setLoginPasswordInput] = useState("");
+  const [loginTurnstileToken, setLoginTurnstileToken] = useState("");
+  const [loginTurnstileResetNonce, setLoginTurnstileResetNonce] = useState(0);
+  const [loginModalOpen, setLoginModalOpen] = useState(false);
+  const [loginBusy, setLoginBusy] = useState(false);
   const [nameInput, setNameInput] = useState("");
   const [emailInput, setEmailInput] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
@@ -1425,8 +1429,16 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
   const [responderDescription, setResponderDescription] = useState("");
 
   const isSignedOut = !auth;
-  const signupNeedsTurnstile = TURNSTILE_SITEKEY.trim() !== "";
+  const turnstileEnabled = TURNSTILE_SITEKEY.trim() !== "";
   const responderDescriptionChars = Array.from(responderDescription).length;
+
+  const handleLoginTurnstileTokenChange = useCallback((token: string) => {
+    setLoginTurnstileToken(token);
+  }, []);
+
+  const handleLoginTurnstileError = useCallback((message: string) => {
+    setError(message);
+  }, []);
 
   const handleSignupTurnstileTokenChange = useCallback((token: string) => {
     setSignupTurnstileToken(token);
@@ -1435,6 +1447,12 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
   const handleSignupTurnstileError = useCallback((message: string) => {
     setError(message);
   }, []);
+
+  useEffect(() => {
+    if (!loginModalOpen || !loginTurnstileToken || loginBusy) return;
+    void submitSignIn(loginTurnstileToken);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loginModalOpen, loginTurnstileToken, loginBusy]);
 
   useEffect(() => {
     if (!signupModalOpen || !signupTurnstileToken || signupBusy) return;
@@ -1468,6 +1486,30 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth]);
 
+  const submitSignIn = async (turnstileToken: string) => {
+    setLoginBusy(true);
+    try {
+      const data = await api<{ account_id: string; session_token: string }>("/accounts/login", null, {
+        method: "POST",
+        body: JSON.stringify({ name: loginNameInput, password: loginPasswordInput, turnstile_token: turnstileToken }),
+      });
+      const next: AccountAuth = { mode: "account", token: data.session_token };
+      saveAuth(next);
+      setAuth(next);
+      setLoginPasswordInput("");
+      setLoginTurnstileToken("");
+      setLoginModalOpen(false);
+      setError("");
+    } catch (e) {
+      setError((e as Error).message);
+      if (turnstileEnabled) setLoginTurnstileResetNonce((value) => value + 1);
+      setLoginTurnstileToken("");
+      setLoginModalOpen(turnstileEnabled);
+    } finally {
+      setLoginBusy(false);
+    }
+  };
+
   const submitSignUp = async (turnstileToken: string) => {
     setSignupBusy(true);
     try {
@@ -1491,9 +1533,9 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
       setError("");
     } catch (e) {
       setError((e as Error).message);
-      if (signupNeedsTurnstile) setSignupTurnstileResetNonce((value) => value + 1);
+      if (turnstileEnabled) setSignupTurnstileResetNonce((value) => value + 1);
       setSignupTurnstileToken("");
-      setSignupModalOpen(signupNeedsTurnstile);
+      setSignupModalOpen(turnstileEnabled);
     } finally {
       setSignupBusy(false);
     }
@@ -1539,7 +1581,7 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
           password: passwordInput,
         }),
       });
-      if (signupNeedsTurnstile) {
+      if (turnstileEnabled) {
         setSignupTurnstileResetNonce((value) => value + 1);
         setSignupModalOpen(true);
         return;
@@ -1552,17 +1594,16 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
     }
   };
 
-  const signIn = async () => {
+  const openSignInVerification = async () => {
     try {
-      const data = await api<{ account_id: string; session_token: string }>("/accounts/login", null, {
-        method: "POST",
-        body: JSON.stringify({ name: loginNameInput, password: loginPasswordInput }),
-      });
-      const next: AccountAuth = { mode: "account", token: data.session_token };
-      saveAuth(next);
-      setAuth(next);
-      setLoginPasswordInput("");
       setError("");
+      setLoginTurnstileToken("");
+      if (turnstileEnabled) {
+        setLoginTurnstileResetNonce((value) => value + 1);
+        setLoginModalOpen(true);
+        return;
+      }
+      await submitSignIn("");
     } catch (e) {
       setError((e as Error).message);
     }
@@ -1639,7 +1680,7 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
                 onChange={(e) => setLoginPasswordInput(e.target.value)}
                 placeholder="password"
               />
-              <button className="account-btn primary" onClick={() => void signIn()}>
+              <button className="account-btn primary" onClick={() => void openSignInVerification()} disabled={loginBusy}>
                 sign in
               </button>
             </div>
@@ -1670,6 +1711,63 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
               </button>
             </div>
           </div>
+
+          {loginModalOpen && (
+            <div
+              className="account-modal-backdrop"
+              role="presentation"
+              onClick={() => {
+                if (loginBusy) return;
+                setLoginModalOpen(false);
+                setLoginTurnstileToken("");
+                setLoginTurnstileResetNonce((value) => value + 1);
+              }}
+            >
+              <div className="account-modal" role="dialog" aria-modal="true" aria-label="Complete login verification" onClick={(e) => e.stopPropagation()}>
+                <div className="account-modal-titlebar">
+                  <p className="account-modal-title">sign in</p>
+                  <button
+                    className="account-btn small"
+                    onClick={() => {
+                      setLoginModalOpen(false);
+                      setLoginTurnstileToken("");
+                      setLoginTurnstileResetNonce((value) => value + 1);
+                    }}
+                    disabled={loginBusy}
+                  >
+                    x
+                  </button>
+                </div>
+                <div className="account-modal-body">
+                  <p className="account-panel-label">complete verification</p>
+                  <p className="account-muted">finish Turnstile verification to sign in.</p>
+                  {!loginTurnstileToken && !loginBusy && (
+                    <TurnstileWidget
+                      sitekey={TURNSTILE_SITEKEY}
+                      resetNonce={loginTurnstileResetNonce}
+                      onTokenChange={handleLoginTurnstileTokenChange}
+                      onError={handleLoginTurnstileError}
+                    />
+                  )}
+                  {(loginTurnstileToken || loginBusy) && <p className="account-modal-status">signing in...</p>}
+                </div>
+                <div className="account-modal-actions">
+                  <button
+                    className="account-btn small"
+                    onClick={() => {
+                      setLoginModalOpen(false);
+                      setLoginTurnstileToken("");
+                      setLoginTurnstileResetNonce((value) => value + 1);
+                    }}
+                    disabled={loginBusy}
+                  >
+                    cancel
+                  </button>
+                </div>
+                {error && <p className="inline-error">{error}</p>}
+              </div>
+            </div>
+          )}
 
           {signupModalOpen && (
             <div
