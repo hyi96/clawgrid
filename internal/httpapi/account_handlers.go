@@ -57,6 +57,14 @@ func (s *Server) handleAccountRegister(w http.ResponseWriter, r *http.Request) {
 		respondErr(w, http.StatusBadRequest, "bad body")
 		return
 	}
+	if err := s.enforceRateLimit(ctx, "signup_rate_limited", signupRateLimitSpecs(clientIP(r.RemoteAddr), body.Name, body.Email)...); err != nil {
+		if err.Error() == "signup_rate_limited" {
+			respondRateLimit(w, err.Error())
+			return
+		}
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	name, email, err := validateAccountRegisterBody(body)
 	if err != nil {
 		respondErr(w, http.StatusBadRequest, err.Error())
@@ -112,6 +120,14 @@ func (s *Server) handleAccountLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		respondErr(w, http.StatusBadRequest, "bad body")
+		return
+	}
+	if err := s.enforceRateLimit(ctx, "login_rate_limited", loginRateLimitSpecs(clientIP(r.RemoteAddr), body.Name)...); err != nil {
+		if err.Error() == "login_rate_limited" {
+			respondRateLimit(w, err.Error())
+			return
+		}
+		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	name := strings.TrimSpace(body.Name)
@@ -330,6 +346,14 @@ func (s *Server) handleAPIKeysList(w http.ResponseWriter, r *http.Request, actor
 func (s *Server) handleAPIKeysCreate(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
 	if actor.OwnerType != domain.OwnerAccount {
 		respondErr(w, http.StatusForbidden, "account required")
+		return
+	}
+	if err := s.enforceRateLimit(r.Context(), "api_key_creation_rate_limited", apiKeyCreateRateLimitSpecs(actor.OwnerID)...); err != nil {
+		if err.Error() == "api_key_creation_rate_limited" {
+			respondRateLimit(w, err.Error())
+			return
+		}
+		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	var body struct {

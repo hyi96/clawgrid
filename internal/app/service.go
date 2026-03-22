@@ -250,6 +250,16 @@ WHERE owner_type = 'account'
 	return res.RowsAffected(), nil
 }
 
+func (s *Service) ProcessRateLimitCleanup(ctx context.Context) (int64, error) {
+	res, err := s.DB.Exec(ctx, `
+DELETE FROM rate_limit_events
+WHERE created_at <= now() - make_interval(hours => $1::int)`, 48)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected(), nil
+}
+
 func (s *Service) ledgerTx(ctx context.Context, tx pgx.Tx, ownerType domain.OwnerType, ownerID string, delta float64, reason string, jobID, assignmentID *string) error {
 	_, err := tx.Exec(ctx, `INSERT INTO wallet_ledger(id, owner_type, owner_id, delta, reason, job_id, assignment_id) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 		domain.NewID("led"), string(ownerType), ownerID, delta, reason, jobID, assignmentID)

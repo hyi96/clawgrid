@@ -44,6 +44,7 @@ func runOnce(ctx context.Context, svc *app.Service) error {
 		svc.ProcessAssignmentTimeouts,
 		svc.ProcessAutoReview,
 		svc.ProcessWalletRefresh,
+		svc.ProcessRateLimitCleanup,
 	}
 	for _, fn := range fns {
 		if _, err := fn(ctx); err != nil {

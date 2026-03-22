@@ -9,6 +9,23 @@ import (
 )
 
 func (s *Server) handleAssignmentsCreate(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
+	limited, err := s.isRateLimited(r.Context(), assignmentFailureRateLimitSpecs(actor.OwnerID)...)
+	if err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if limited {
+		respondRateLimit(w, "assignment_rate_limited")
+		return
+	}
+	if err := s.enforceRateLimit(r.Context(), "assignment_rate_limited", assignmentAttemptRateLimitSpecs(actor.OwnerID)...); err != nil {
+		if err.Error() == "assignment_rate_limited" {
+			respondRateLimit(w, err.Error())
+			return
+		}
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if err := s.syncJobQueues(r.Context()); err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -18,10 +35,12 @@ func (s *Server) handleAssignmentsCreate(w http.ResponseWriter, r *http.Request,
 		ResponderOwnerID string `json:"responder_owner_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.recordAssignmentFailure(r.Context(), actor.OwnerID)
 		respondErr(w, http.StatusBadRequest, "bad body")
 		return
 	}
 	if body.JobID == "" || body.ResponderOwnerID == "" {
+		s.recordAssignmentFailure(r.Context(), actor.OwnerID)
 		respondErr(w, http.StatusBadRequest, "bad body")
 		return
 	}
@@ -41,6 +60,7 @@ func (s *Server) handleAssignmentsCreate(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	if !responderExists {
+		s.recordAssignmentFailure(r.Context(), actor.OwnerID)
 		respondErr(w, http.StatusNotFound, "responder_not_found")
 		return
 	}
@@ -55,10 +75,12 @@ SELECT owner_type,
 FROM jobs
 WHERE id = $1
 FOR UPDATE`, body.JobID, int(s.cfg.AssignmentDeadline.Minutes())).Scan(&jobOwnerType, &jobOwnerID, &status, &timeLimitMinutes); err != nil {
+		s.recordAssignmentFailure(r.Context(), actor.OwnerID)
 		respondErr(w, http.StatusNotFound, "job not found")
 		return
 	}
 	if status != "routing" {
+		s.recordAssignmentFailure(r.Context(), actor.OwnerID)
 		respondErr(w, http.StatusConflict, "job_not_routing")
 		return
 	}
@@ -70,6 +92,7 @@ FOR UPDATE`, body.JobID, int(s.cfg.AssignmentDeadline.Minutes())).Scan(&jobOwner
 		string(domain.OwnerAccount),
 		body.ResponderOwnerID,
 	); guard != "" {
+		s.recordAssignmentFailure(r.Context(), actor.OwnerID)
 		respondErr(w, http.StatusBadRequest, guard)
 		return
 	}
@@ -79,11 +102,13 @@ FOR UPDATE`, body.JobID, int(s.cfg.AssignmentDeadline.Minutes())).Scan(&jobOwner
 		return
 	}
 	if responderBusy {
+		s.recordAssignmentFailure(r.Context(), actor.OwnerID)
 		respondErr(w, http.StatusConflict, "responder_busy")
 		return
 	}
 	if err := s.holdResponderStake(r.Context(), tx, body.JobID, domain.OwnerAccount, body.ResponderOwnerID); err != nil {
 		if err.Error() == "insufficient_balance" {
+			s.recordAssignmentFailure(r.Context(), actor.OwnerID)
 			respondErr(w, http.StatusPaymentRequired, "responder_insufficient_stake_balance")
 			return
 		}
@@ -96,6 +121,7 @@ INSERT INTO assignments(id, job_id, dispatcher_owner_type, dispatcher_owner_id, 
 VALUES ($1,$2,$3,$4,$5,$6, now() + make_interval(mins => $7::int), 'active')`,
 		id, body.JobID, string(actor.OwnerType), actor.OwnerID, string(domain.OwnerAccount), body.ResponderOwnerID, timeLimitMinutes)
 	if err != nil {
+		s.recordAssignmentFailure(r.Context(), actor.OwnerID)
 		respondErr(w, http.StatusConflict, "assignment_conflict")
 		return
 	}

@@ -10,6 +10,23 @@ import (
 )
 
 func (s *Server) handleJobClaim(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
+	limited, err := s.isRateLimited(r.Context(), claimFailureRateLimitSpecs(actor.OwnerID)...)
+	if err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if limited {
+		respondRateLimit(w, "claim_rate_limited")
+		return
+	}
+	if err := s.enforceRateLimit(r.Context(), "claim_rate_limited", claimAttemptRateLimitSpecs(actor.OwnerID)...); err != nil {
+		if err.Error() == "claim_rate_limited" {
+			respondRateLimit(w, err.Error())
+			return
+		}
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if err := s.syncJobQueues(r.Context()); err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -51,18 +68,22 @@ FOR UPDATE`, jobID, int(s.cfg.AssignmentDeadline.Minutes())).Scan(
 		&timeLimitMinutes,
 	)
 	if err != nil {
+		s.recordClaimFailure(r.Context(), actor.OwnerID)
 		respondErr(w, http.StatusNotFound, "job not found")
 		return
 	}
 	if responseID != nil {
+		s.recordClaimFailure(r.Context(), actor.OwnerID)
 		respondErr(w, http.StatusConflict, "job_already_replied")
 		return
 	}
 	if status != "system_pool" {
+		s.recordClaimFailure(r.Context(), actor.OwnerID)
 		respondErr(w, http.StatusConflict, "job_not_pool")
 		return
 	}
 	if ownerType == string(actor.OwnerType) && ownerID == actor.OwnerID {
+		s.recordClaimFailure(r.Context(), actor.OwnerID)
 		respondErr(w, http.StatusBadRequest, "prompter_cannot_claim")
 		return
 	}
@@ -88,6 +109,7 @@ FOR UPDATE`, jobID, int(s.cfg.AssignmentDeadline.Minutes())).Scan(
 			})
 			return
 		}
+		s.recordClaimFailure(r.Context(), actor.OwnerID)
 		respondErr(w, http.StatusConflict, "job_already_claimed")
 		return
 	}
@@ -97,6 +119,7 @@ FOR UPDATE`, jobID, int(s.cfg.AssignmentDeadline.Minutes())).Scan(
 		return
 	}
 	if responderBusy {
+		s.recordClaimFailure(r.Context(), actor.OwnerID)
 		respondErr(w, http.StatusConflict, "responder_busy")
 		return
 	}
@@ -105,6 +128,7 @@ FOR UPDATE`, jobID, int(s.cfg.AssignmentDeadline.Minutes())).Scan(
 	}
 	if err := s.holdResponderStake(r.Context(), tx, jobID, actor.OwnerType, actor.OwnerID); err != nil {
 		if err.Error() == "insufficient_balance" {
+			s.recordClaimFailure(r.Context(), actor.OwnerID)
 			respondErr(w, http.StatusPaymentRequired, "insufficient_stake_balance")
 			return
 		}

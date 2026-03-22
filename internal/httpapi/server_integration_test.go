@@ -363,6 +363,26 @@ WHERE owner_type = 'account'
 	}
 }
 
+func TestJobClaimRateLimitedAfterRepeatedFailures(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	prompter := h.registerAccount(t, "tom")
+	holder := h.registerAccount(t, "holder")
+	spammer := h.registerAccount(t, "spammer")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "hello from tom")
+
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/claim", holder.apiKey, nil, http.StatusOK, nil)
+
+	for i := 0; i < claimFailureLimit; i++ {
+		h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/claim", spammer.apiKey, nil, http.StatusConflict, nil)
+	}
+
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/claim", spammer.apiKey, nil, http.StatusTooManyRequests, nil)
+}
+
 func TestResponderWorkRejectsSecondConcurrentPollForSameAccount(t *testing.T) {
 	t.Parallel()
 
@@ -572,6 +592,29 @@ func TestAssignmentRejectsUnknownResponderIdentity(t *testing.T) {
 		"job_id":             jobID,
 		"responder_owner_id": "acct_missing",
 	}, http.StatusNotFound, nil)
+}
+
+func TestAssignmentRateLimitedAfterRepeatedFailures(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	dispatcher := h.registerAccount(t, "dispatch")
+	prompter := h.registerAccount(t, "tom")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "assign this directly")
+
+	for i := 0; i < assignmentFailureLimit; i++ {
+		h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
+			"job_id":             jobID,
+			"responder_owner_id": "acct_missing",
+		}, http.StatusNotFound, nil)
+	}
+
+	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
+		"job_id":             jobID,
+		"responder_owner_id": "acct_missing",
+	}, http.StatusTooManyRequests, nil)
 }
 
 func TestPrompterCannotSendNewMessageWhileFeedbackIsPending(t *testing.T) {
@@ -999,6 +1042,34 @@ func TestAccountRegisterRequiresValidUniqueEmail(t *testing.T) {
 	}, http.StatusConflict, nil)
 }
 
+func TestAccountRegisterRateLimited(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	for i := 0; i < signupUsernameLimit; i++ {
+		status := http.StatusConflict
+		if i == 0 {
+			status = http.StatusCreated
+		}
+		h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterPath, "", map[string]string{
+			"Origin": h.app.cfg.FrontendOrigin,
+		}, map[string]any{
+			"name":     "tom",
+			"email":    fmt.Sprintf("tom-%d@example.com", i),
+			"password": "password123",
+		}, status, nil)
+	}
+
+	h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterPath, "", map[string]string{
+		"Origin": h.app.cfg.FrontendOrigin,
+	}, map[string]any{
+		"name":     "tom",
+		"email":    "tom-final@example.com",
+		"password": "password123",
+	}, http.StatusTooManyRequests, nil)
+}
+
 func TestAccountRegisterRequiresTurnstileWhenConfigured(t *testing.T) {
 	t.Parallel()
 
@@ -1077,6 +1148,33 @@ func TestAccountLoginRequiresTurnstileWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestAccountLoginRateLimited(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+	created := h.registerAccount(t, "tom")
+
+	for i := 0; i < loginPairLimit; i++ {
+		h.requestJSON(t, http.MethodPost, "/accounts/login", "", map[string]any{
+			"name":     "tom",
+			"password": "wrong-password",
+		}, http.StatusUnauthorized, nil)
+	}
+
+	var me struct {
+		ID string `json:"id"`
+	}
+	h.requestJSON(t, http.MethodPost, "/accounts/login", "", map[string]any{
+		"name":     "tom",
+		"password": "wrong-password",
+	}, http.StatusTooManyRequests, nil)
+
+	h.requestJSON(t, http.MethodGet, "/account/me", created.apiKey, nil, http.StatusOK, &me)
+	if me.ID != created.accountID {
+		t.Fatalf("me.id = %q, want %q", me.ID, created.accountID)
+	}
+}
+
 func TestAccountLogoutRevokesSessionButLeavesAPIKeyUsable(t *testing.T) {
 	t.Parallel()
 
@@ -1106,6 +1204,23 @@ func TestAccountLogoutRevokesSessionButLeavesAPIKeyUsable(t *testing.T) {
 	if me.ID != created.AccountID {
 		t.Fatalf("api key auth me.id = %q, want %q", me.ID, created.AccountID)
 	}
+}
+
+func TestAPIKeyCreationRateLimited(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+	account := h.registerAccount(t, "tom")
+
+	for i := 0; i < apiKeyCreateLimit; i++ {
+		h.requestJSON(t, http.MethodPost, "/account/api-keys", account.apiKey, map[string]any{
+			"label": fmt.Sprintf("key-%d", i),
+		}, http.StatusCreated, nil)
+	}
+
+	h.requestJSON(t, http.MethodPost, "/account/api-keys", account.apiKey, map[string]any{
+		"label": "too-many",
+	}, http.StatusTooManyRequests, nil)
 }
 
 func TestAccountAPIKeyLimitIsCappedAtFiveActiveKeys(t *testing.T) {
