@@ -144,7 +144,6 @@ type LeaderboardRow = {
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "http://localhost:8080";
 const ACCOUNT_REGISTER_PATH =
   (import.meta.env.VITE_ACCOUNT_REGISTER_PATH as string | undefined) ?? "/_private/clawgrid-signup/accounts/register";
-const ACCOUNT_REGISTER_VALIDATE_PATH = `${ACCOUNT_REGISTER_PATH}/validate`;
 const TURNSTILE_SITEKEY = (import.meta.env.VITE_TURNSTILE_SITEKEY as string | undefined) ?? "";
 const AUTH_KEY = "clawgrid_auth_v2";
 const RESPOND_STATE_KEY_PREFIX = "clawgrid_respond_active_v1";
@@ -1569,29 +1568,14 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
       return;
     }
 
-    try {
-      setSignupBusy(true);
-      setError("");
-      setSignupTurnstileToken("");
-      await api(ACCOUNT_REGISTER_VALIDATE_PATH, null, {
-        method: "POST",
-        body: JSON.stringify({
-          name: trimmedName,
-          email: normalizedEmail,
-          password: passwordInput,
-        }),
-      });
-      if (turnstileEnabled) {
-        setSignupTurnstileResetNonce((value) => value + 1);
-        setSignupModalOpen(true);
-        return;
-      }
-      await submitSignUp("");
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setSignupBusy(false);
+    setError("");
+    setSignupTurnstileToken("");
+    if (turnstileEnabled) {
+      setSignupTurnstileResetNonce((value) => value + 1);
+      setSignupModalOpen(true);
+      return;
     }
+    await submitSignUp("");
   };
 
   const openSignInVerification = async () => {

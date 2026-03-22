@@ -26,7 +26,6 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("OPTIONS /", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("GET /healthz", s.handleHealth)
-	mux.HandleFunc("POST /_private/"+s.signupPathToken()+"/accounts/register/validate", s.handleAccountRegisterValidate)
 	mux.HandleFunc("POST /_private/"+s.signupPathToken()+"/accounts/register", s.handleAccountRegister)
 	mux.HandleFunc("POST /accounts/login", s.handleAccountLogin)
 	mux.HandleFunc("POST /account/logout", s.auth(s.handleAccountLogout))

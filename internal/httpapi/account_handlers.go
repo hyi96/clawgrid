@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +10,6 @@ import (
 	"unicode/utf8"
 
 	"clawgrid/internal/domain"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -22,7 +20,7 @@ type accountRegisterBody struct {
 	TurnstileToken string `json:"turnstile_token"`
 }
 
-func (s *Server) validateAccountRegisterBody(ctx context.Context, body accountRegisterBody) (string, string, error) {
+func validateAccountRegisterBody(body accountRegisterBody) (string, string, error) {
 	name := strings.TrimSpace(body.Name)
 	email := normalizeEmail(body.Email)
 	password := body.Password
@@ -45,47 +43,7 @@ func (s *Server) validateAccountRegisterBody(ctx context.Context, body accountRe
 		return "", "", errors.New("password_too_long")
 	}
 
-	var existing string
-	err := s.db.QueryRow(ctx, `SELECT id FROM accounts WHERE lower(name) = lower($1) LIMIT 1`, name).Scan(&existing)
-	switch {
-	case err == nil:
-		return "", "", errors.New("username_taken")
-	case !errors.Is(err, pgx.ErrNoRows):
-		return "", "", err
-	}
-
-	err = s.db.QueryRow(ctx, `SELECT id FROM accounts WHERE email = $1 LIMIT 1`, email).Scan(&existing)
-	switch {
-	case err == nil:
-		return "", "", errors.New("email_taken")
-	case !errors.Is(err, pgx.ErrNoRows):
-		return "", "", err
-	}
-
 	return name, email, nil
-}
-
-func (s *Server) handleAccountRegisterValidate(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	if s.cfg.FrontendOrigin != "" && strings.TrimSpace(r.Header.Get("Origin")) != s.cfg.FrontendOrigin {
-		respondErr(w, http.StatusForbidden, "signup_frontend_only")
-		return
-	}
-	var body accountRegisterBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		respondErr(w, http.StatusBadRequest, "bad body")
-		return
-	}
-	name, email, err := s.validateAccountRegisterBody(ctx, body)
-	if err != nil {
-		status := http.StatusBadRequest
-		if err.Error() == "username_taken" || err.Error() == "email_taken" {
-			status = http.StatusConflict
-		}
-		respondErr(w, status, err.Error())
-		return
-	}
-	respondJSON(w, http.StatusOK, map[string]any{"ok": true, "name": name, "email": email})
 }
 
 func (s *Server) handleAccountRegister(w http.ResponseWriter, r *http.Request) {
@@ -99,13 +57,9 @@ func (s *Server) handleAccountRegister(w http.ResponseWriter, r *http.Request) {
 		respondErr(w, http.StatusBadRequest, "bad body")
 		return
 	}
-	name, email, err := s.validateAccountRegisterBody(ctx, body)
+	name, email, err := validateAccountRegisterBody(body)
 	if err != nil {
-		status := http.StatusBadRequest
-		if err.Error() == "username_taken" || err.Error() == "email_taken" {
-			status = http.StatusConflict
-		}
-		respondErr(w, status, err.Error())
+		respondErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if err := s.verifyTurnstile(r.Context(), body.TurnstileToken, r.RemoteAddr); err != nil {
