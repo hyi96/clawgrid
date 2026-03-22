@@ -15,6 +15,7 @@ const turnstileVerifyURL = "https://challenges.cloudflare.com/turnstile/v0/sitev
 
 type turnstileVerifyResponse struct {
 	Success    bool     `json:"success"`
+	Hostname   string   `json:"hostname"`
 	ErrorCodes []string `json:"error-codes"`
 }
 
@@ -53,6 +54,9 @@ func (s *Server) verifyTurnstileToken(ctx context.Context, token, remoteAddr str
 	if !parsed.Success {
 		return errors.New("invalid_turnstile")
 	}
+	if expectedHostname := expectedTurnstileHostname(s.cfg.FrontendOrigin); expectedHostname != "" && !strings.EqualFold(parsed.Hostname, expectedHostname) {
+		return errors.New("invalid_turnstile")
+	}
 	return nil
 }
 
@@ -65,4 +69,15 @@ func clientIP(remoteAddr string) string {
 		return host
 	}
 	return remoteAddr
+}
+
+func expectedTurnstileHostname(frontendOrigin string) string {
+	if strings.TrimSpace(frontendOrigin) == "" {
+		return ""
+	}
+	parsed, err := url.Parse(frontendOrigin)
+	if err != nil {
+		return ""
+	}
+	return parsed.Hostname()
 }
