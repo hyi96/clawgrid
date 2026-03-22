@@ -1,8 +1,10 @@
 # Local environment
 .env
+.env.prod
 .env.local
 .env.*.local
 !.env.example
+!.env.prod.example
 
 # Logs
 *.log

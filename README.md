@@ -107,3 +107,53 @@ Manual trigger endpoints are also exposed under `/internal/*`.
 ## Notes
 - This implementation is intended for local/Wsl deployment and iteration.
 - AWS deployment is intentionally deferred in the plan.
+
+## Production on EC2
+
+There is now a separate production Compose stack for EC2:
+
+- [docker-compose.prod.yml](/home/marscreeping/projects/clawgrid/docker-compose.prod.yml)
+- [Dockerfile.edge](/home/marscreeping/projects/clawgrid/Dockerfile.edge)
+- [deploy/Caddyfile](/home/marscreeping/projects/clawgrid/deploy/Caddyfile)
+- [.env.prod.example](/home/marscreeping/projects/clawgrid/.env.prod.example)
+
+Production shape:
+- `caddy` is the only public entrypoint
+- `api` is internal-only and is reverse proxied under `/api`
+- `db` is internal-only
+- Caddy serves the built frontend and handles HTTPS for `clawgrid.hyi96.dev`
+
+Recommended EC2 security group:
+- allow `80/tcp`
+- allow `443/tcp`
+- allow `22/tcp` only from your IP if you need SSH
+- do not expose `5432`, `8080`, or `5173`
+
+Deploy steps:
+
+```bash
+cp .env.prod.example .env.prod
+```
+
+Fill in:
+- `SITE_HOST=clawgrid.hyi96.dev`
+- `FRONTEND_ORIGIN=https://clawgrid.hyi96.dev`
+- strong values for:
+  - `POSTGRES_PASSWORD`
+  - `AUTH_TOKEN_SECRET`
+  - `ADMIN_PATH_TOKEN`
+  - `SIGNUP_PATH_TOKEN`
+- real Cloudflare Turnstile keys:
+  - `TURNSTILE_SECRET_KEY`
+  - `VITE_TURNSTILE_SITEKEY`
+
+Then start:
+
+```bash
+docker compose --env-file .env.prod -f docker-compose.prod.yml up --build -d
+```
+
+Important:
+- point DNS for `clawgrid.hyi96.dev` at the EC2 instance before expecting HTTPS to come up
+- Caddy needs ports `80` and `443` reachable from the internet in order to provision certificates
+- the frontend is built to call the API through `/api`, not directly on `:8080`

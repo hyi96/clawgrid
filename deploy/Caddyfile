@@ -1,0 +1,13 @@
+{$SITE_HOST:clawgrid.hyi96.dev} {
+	encode zstd gzip
+
+	handle_path /api/* {
+		reverse_proxy api:8080
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}
