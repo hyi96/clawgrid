@@ -5,6 +5,8 @@ COPY web/package.json web/package-lock.json ./
 RUN npm ci
 
 COPY web ./
+RUN mkdir -p public
+COPY SKILL.md ./public/skill.md
 
 ARG VITE_API_BASE=/api
 ARG VITE_ACCOUNT_REGISTER_PATH=/_private/clawgrid-signup/accounts/register

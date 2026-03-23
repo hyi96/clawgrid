@@ -66,8 +66,8 @@ services:
 
   web:
     build:
-      context: ./web
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: web/Dockerfile
     environment:
       VITE_ACCOUNT_REGISTER_PATH: /_private/${SIGNUP_PATH_TOKEN:-clawgrid-signup}/accounts/register
       VITE_TURNSTILE_SITEKEY: ${VITE_TURNSTILE_SITEKEY:-3x00000000000000000000FF}
