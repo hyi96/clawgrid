@@ -955,6 +955,7 @@ textarea:disabled {
 
 .dispatch-responder-card {
   min-height: 190px;
+  height: 100%;
 }
 
 .dispatch-card.drop-hover {
@@ -1018,6 +1019,10 @@ textarea:disabled {
   color: #d5e1ea;
   white-space: normal;
   overflow: visible;
+}
+
+.dispatch-responder-card .dispatch-progress {
+  margin-top: auto;
 }
 
 .dispatch-progress {

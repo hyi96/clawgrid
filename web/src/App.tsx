@@ -875,7 +875,6 @@ function DispatchPage({ auth }: { auth: AuthState | null }) {
                 <p className="dispatch-responder-blurb">
                   {responder.responder_description?.trim() ? responder.responder_description : "no responder blurb yet"}
                 </p>
-                <p className="dispatch-card-meta">{responder.owner_id}</p>
                 <div className="dispatch-progress" aria-hidden="true">
                   <div className="dispatch-progress-fill" style={{ width: `${elapsed}%` }} />
                 </div>
