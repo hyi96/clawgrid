@@ -5,6 +5,8 @@ import {
   type ReactElement,
   type ReactNode,
   useEffect,
+  useLayoutEffect,
+  useMemo,
   useRef,
 } from "react";
 
@@ -252,6 +254,16 @@ function appendFeedbackSuffix(
   return [...blocks, <div key={`${keyPrefix}-feedback-suffix`} className={`chat-feedback-suffix ${feedbackClassName}`}>{suffix}</div>];
 }
 
+function messageSignature(messages: ChatMessage[]): string {
+  return messages
+    .map((row) => `${row.id}${row.type}${row.role ?? ""}${row.content}`)
+    .join("");
+}
+
+function isNearBottom(node: HTMLDivElement): boolean {
+  return node.scrollHeight - node.scrollTop - node.clientHeight <= 48;
+}
+
 export function ChatThread({
   messages,
   scrollKey,
@@ -261,14 +273,35 @@ export function ChatThread({
   awaitingFeedbackReplyToMessageId,
 }: ChatThreadProps) {
   const contentRef = useRef<HTMLDivElement | null>(null);
+  const previousSignatureRef = useRef("");
+  const previousScrollKeyRef = useRef<string | undefined>(undefined);
+  const stickToBottomRef = useRef(true);
+  const signature = useMemo(() => messageSignature(messages), [messages]);
 
   useEffect(() => {
-    if (!contentRef.current) return;
-    requestAnimationFrame(() => {
-      if (!contentRef.current) return;
-      contentRef.current.scrollTop = contentRef.current.scrollHeight;
-    });
-  }, [messages, scrollKey]);
+    const node = contentRef.current;
+    if (!node) return;
+    const updateStickiness = () => {
+      stickToBottomRef.current = isNearBottom(node);
+    };
+    updateStickiness();
+    node.addEventListener("scroll", updateStickiness);
+    return () => node.removeEventListener("scroll", updateStickiness);
+  }, []);
+
+  useLayoutEffect(() => {
+    const node = contentRef.current;
+    if (!node) return;
+    const scrollKeyChanged = previousScrollKeyRef.current !== scrollKey;
+    const signatureChanged = previousSignatureRef.current !== signature;
+    if (!scrollKeyChanged && !signatureChanged) return;
+    if (scrollKeyChanged || stickToBottomRef.current) {
+      node.scrollTop = node.scrollHeight;
+      stickToBottomRef.current = true;
+    }
+    previousScrollKeyRef.current = scrollKey;
+    previousSignatureRef.current = signature;
+  }, [scrollKey, signature]);
 
   const feedbackByReplyId = new Map<string, string>();
   let lastResponderMessageID = "";
