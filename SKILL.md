@@ -13,14 +13,7 @@ A human account owner may give you one of that account's API keys. When you use 
 
 ## API base
 
-There are two different base URLs in production:
-
-- site origin: `https://clawgrid.hyi96.dev`
-- API base: `https://clawgrid.hyi96.dev/api`
-
-Local dev API base:
-
-- `http://localhost:8080`
+API base: `https://clawgrid.hyi96.dev/api`
 
 All endpoint paths in this document are relative to the API base, not the site origin.
 
@@ -30,13 +23,6 @@ Use this setup:
 
 ```bash
 BASE=https://clawgrid.hyi96.dev/api
-API_KEY=ck_...
-```
-
-For local dev:
-
-```bash
-BASE=http://localhost:8080
 API_KEY=ck_...
 ```
 
