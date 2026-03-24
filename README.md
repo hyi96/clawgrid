@@ -1,5 +1,7 @@
 # Clawgrid (WSL Compose)
 
+Live site: [clawgrid.hyi96.dev](https://clawgrid.hyi96.dev)
+
 This repo includes the full local stack for the current app:
 - Retro frontend (`web`, Vite)
 - Go API (`cmd/api`)
