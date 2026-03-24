@@ -219,6 +219,57 @@ function clampPercent(v: number): number {
   return Math.max(0, Math.min(100, v));
 }
 
+function routingEndsAtMs(job: RoutingJob): number {
+  const endsAt = job.routing_ends_at ? new Date(job.routing_ends_at).getTime() : Number.NaN;
+  return Number.isFinite(endsAt) ? endsAt : 0;
+}
+
+function responderWaitEndsAtMs(responder: AvailableResponder): number {
+  const startedAt = responder.poll_started_at ? new Date(responder.poll_started_at).getTime() : Number.NaN;
+  if (!Number.isFinite(startedAt)) return 0;
+  const waitMs = Math.max(1, (responder.assignment_wait_seconds ?? 30) * 1000);
+  return startedAt + waitMs;
+}
+
+function isRoutingJobActive(job: RoutingJob, now = Date.now()): boolean {
+  return routingEndsAtMs(job) > now;
+}
+
+function isResponderAvailableNow(responder: AvailableResponder, now = Date.now()): boolean {
+  return responderWaitEndsAtMs(responder) > now;
+}
+
+function reconcileDispatchQueue<T>(
+  current: T[],
+  incoming: T[],
+  keyOf: (item: T) => string,
+  isVisible: (item: T, now: number) => boolean,
+  maxItems: number,
+): T[] {
+  const now = Date.now();
+  const incomingByKey = new Map(incoming.map((item) => [keyOf(item), item]));
+  const next: T[] = [];
+  const used = new Set<string>();
+
+  for (const item of current) {
+    const key = keyOf(item);
+    if (!isVisible(item, now)) continue;
+    next.push(incomingByKey.get(key) ?? item);
+    used.add(key);
+    if (next.length >= maxItems) return next;
+  }
+
+  for (const item of incoming) {
+    const key = keyOf(item);
+    if (used.has(key) || !isVisible(item, now)) continue;
+    next.push(item);
+    used.add(key);
+    if (next.length >= maxItems) break;
+  }
+
+  return next;
+}
+
 function normalizeEmailInput(raw: string): string {
   return raw.trim().toLowerCase();
 }
@@ -715,33 +766,72 @@ function DispatchPage({ auth }: { auth: AuthState | null }) {
     return dropZone?.dataset.jobId ?? "";
   };
 
-  const load = async () => {
+  const load = useCallback(async () => {
     if (!auth) return;
     try {
       const [jobData, responderData] = await Promise.all([
         api<{ items: RoutingJob[] }>("/routing/jobs", auth),
         api<{ items: AvailableResponder[] }>("/responders/available", auth),
       ]);
-      setJobs(jobData.items);
-      setResponders(responderData.items);
+      setJobs((current) =>
+        reconcileDispatchQueue(current, jobData.items, (job) => job.id, isRoutingJobActive, DISPATCH_JOB_SLOTS),
+      );
+      setResponders((current) =>
+        reconcileDispatchQueue(
+          current,
+          responderData.items,
+          (responder) => `${responder.owner_type}:${responder.owner_id}`,
+          isResponderAvailableNow,
+          DISPATCH_RESPONDER_SLOTS,
+        ),
+      );
     } catch (e) {
       setError((e as Error).message);
     }
-  };
+  }, [auth]);
 
   useEffect(() => {
+    if (auth) return;
+    setJobs([]);
+    setResponders([]);
+    setError("");
+  }, [auth]);
+
+  useEffect(() => {
+    if (!auth) return;
     void load();
     const id = window.setInterval(() => {
       void load();
     }, 3000);
     return () => window.clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auth]);
+  }, [auth, load]);
 
   useEffect(() => {
     const id = window.setInterval(() => setNowTick(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    if (!auth) return;
+    let jobsExpired = false;
+    let respondersExpired = false;
+
+    setJobs((current) => {
+      const next = current.filter((job) => isRoutingJobActive(job, nowTick));
+      jobsExpired = next.length !== current.length;
+      return jobsExpired ? next : current;
+    });
+
+    setResponders((current) => {
+      const next = current.filter((responder) => isResponderAvailableNow(responder, nowTick));
+      respondersExpired = next.length !== current.length;
+      return respondersExpired ? next : current;
+    });
+
+    if (jobsExpired || respondersExpired) {
+      void load();
+    }
+  }, [auth, load, nowTick]);
 
   useEffect(() => {
     if (!draggingResponder) return;
@@ -789,6 +879,12 @@ function DispatchPage({ auth }: { auth: AuthState | null }) {
           responder_owner_id: responder.owner_id,
         }),
       });
+      setJobs((current) => current.filter((job) => job.id !== jobID));
+      setResponders((current) =>
+        current.filter(
+          (row) => !(row.owner_type === responder.owner_type && row.owner_id === responder.owner_id),
+        ),
+      );
       await load();
     } catch (e) {
       const msg = (e as Error).message;
