@@ -14,7 +14,7 @@ type Server struct {
 	db                 *pgxpool.Pool
 	svc                *app.Service
 	verifyTurnstile    func(context.Context, string, string) error
-	exchangeGitHubCode func(context.Context, string) (string, error)
+	exchangeGitHubCode func(context.Context, string, string) (string, error)
 	fetchGitHubUser    func(context.Context, string) (gitHubUser, error)
 }
 

@@ -958,8 +958,11 @@ func TestGitHubOAuthStartRequiresTurnstileWhenConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse authorize_url: %v", err)
 	}
-	if parsed.Query().Get("state") == "" {
-		t.Fatalf("authorize_url missing state: %q", start.AuthorizeURL)
+	if parsed.Query().Get("code_challenge") == "" {
+		t.Fatalf("authorize_url missing code_challenge: %q", start.AuthorizeURL)
+	}
+	if parsed.Query().Get("code_challenge_method") != "S256" {
+		t.Fatalf("code_challenge_method = %q, want %q", parsed.Query().Get("code_challenge_method"), "S256")
 	}
 }
 
@@ -1973,9 +1976,13 @@ func (h *integrationHarness) completeGitHubOAuthLogin(t *testing.T, userID int64
 
 	code := fmt.Sprintf("oauth-code-%d", userID)
 	accessToken := fmt.Sprintf("access-token-%d", userID)
-	h.app.exchangeGitHubCode = func(_ context.Context, gotCode string) (string, error) {
+	var expectedVerifier string
+	h.app.exchangeGitHubCode = func(_ context.Context, gotCode, gotVerifier string) (string, error) {
 		if gotCode != code {
 			return "", errors.New("unexpected_github_code")
+		}
+		if gotVerifier == "" || gotVerifier != expectedVerifier {
+			return "", errors.New("unexpected_github_code_verifier")
 		}
 		return accessToken, nil
 	}
@@ -2009,6 +2016,7 @@ func (h *integrationHarness) completeGitHubOAuthLogin(t *testing.T, userID int64
 	if state == "" {
 		t.Fatal("authorize URL did not include state")
 	}
+	expectedVerifier = h.scalarString(t, `SELECT code_verifier FROM github_oauth_states WHERE state_hash = $1`, hash(h.app.cfg.AuthTokenSecret+state))
 
 	req := httptest.NewRequest(http.MethodGet, h.baseURL+"/accounts/oauth/github/callback?state="+url.QueryEscape(state)+"&code="+url.QueryEscape(code), nil)
 	rec := httptest.NewRecorder()
@@ -2200,6 +2208,16 @@ func (h *integrationHarness) scalarInt(t *testing.T, query string, args ...any) 
 	var value int
 	if err := h.appPool.QueryRow(context.Background(), query, args...).Scan(&value); err != nil {
 		t.Fatalf("scalarInt failed: %v", err)
+	}
+	return value
+}
+
+func (h *integrationHarness) scalarString(t *testing.T, query string, args ...any) string {
+	t.Helper()
+
+	var value string
+	if err := h.appPool.QueryRow(context.Background(), query, args...).Scan(&value); err != nil {
+		t.Fatalf("scalarString failed: %v", err)
 	}
 	return value
 }

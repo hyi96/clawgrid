@@ -2,6 +2,9 @@ package httpapi
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -77,11 +80,16 @@ func (s *Server) handleGitHubOAuthStart(w http.ResponseWriter, r *http.Request) 
 	}
 
 	state := domain.NewID("ghst")
-	if err := s.persistGitHubOAuthState(ctx, state); err != nil {
+	codeVerifier, err := newGitHubPKCECodeVerifier()
+	if err != nil {
+		respondErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	if err := s.persistGitHubOAuthState(ctx, state, codeVerifier); err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	authorizeURL, err := s.buildGitHubAuthorizeURL(state)
+	authorizeURL, err := s.buildGitHubAuthorizeURL(state, codeVerifier)
 	if err != nil {
 		respondErr(w, http.StatusServiceUnavailable, err.Error())
 		return
@@ -107,13 +115,14 @@ func (s *Server) handleGitHubOAuthCallback(w http.ResponseWriter, r *http.Reques
 		s.redirectGitHubOAuthResult(w, "invalid_github_oauth_callback", "")
 		return
 	}
-	if err := s.consumeGitHubOAuthState(r.Context(), state); err != nil {
+	codeVerifier, err := s.consumeGitHubOAuthState(r.Context(), state)
+	if err != nil {
 		s.redirectGitHubOAuthResult(w, err.Error(), "")
 		return
 	}
-	accessToken, err := s.exchangeGitHubCode(r.Context(), code)
+	accessToken, err := s.exchangeGitHubCode(r.Context(), code, codeVerifier)
 	if err != nil {
-		s.redirectGitHubOAuthResult(w, err.Error(), "")
+		s.redirectGitHubOAuthResult(w, "github_oauth_failed", "")
 		return
 	}
 	user, err := s.fetchGitHubUser(r.Context(), accessToken)
@@ -161,7 +170,7 @@ func (s *Server) handleGitHubOAuthExchange(w http.ResponseWriter, r *http.Reques
 	respondJSON(w, http.StatusOK, map[string]any{"account_id": accountID, "session_token": sessionToken})
 }
 
-func (s *Server) buildGitHubAuthorizeURL(state string) (string, error) {
+func (s *Server) buildGitHubAuthorizeURL(state, codeVerifier string) (string, error) {
 	if !s.githubOAuthConfigured() {
 		return "", errors.New("github_oauth_not_configured")
 	}
@@ -172,46 +181,52 @@ func (s *Server) buildGitHubAuthorizeURL(state string) (string, error) {
 	values.Set("state", state)
 	values.Set("allow_signup", "true")
 	values.Set("prompt", "select_account")
+	values.Set("code_challenge", gitHubPKCECodeChallenge(codeVerifier))
+	values.Set("code_challenge_method", "S256")
 	return gitHubAuthorizeURL + "?" + values.Encode(), nil
 }
 
-func (s *Server) persistGitHubOAuthState(ctx context.Context, state string) error {
+func (s *Server) persistGitHubOAuthState(ctx context.Context, state, codeVerifier string) error {
 	_ = s.cleanupExpiredGitHubOAuthArtifacts(ctx)
 	_, err := s.db.Exec(ctx,
-		`INSERT INTO github_oauth_states(id, state_hash) VALUES ($1,$2)`,
-		domain.NewID("ghs"), hash(s.cfg.AuthTokenSecret+state),
+		`INSERT INTO github_oauth_states(id, state_hash, code_verifier) VALUES ($1,$2,$3)`,
+		domain.NewID("ghs"), hash(s.cfg.AuthTokenSecret+state), codeVerifier,
 	)
 	return err
 }
 
-func (s *Server) consumeGitHubOAuthState(ctx context.Context, state string) error {
+func (s *Server) consumeGitHubOAuthState(ctx context.Context, state string) (string, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer tx.Rollback(ctx)
 
 	var (
-		id      string
-		created time.Time
-		usedAt  *time.Time
+		id           string
+		codeVerifier string
+		created      time.Time
+		usedAt       *time.Time
 	)
 	if err := tx.QueryRow(ctx,
-		`SELECT id, created_at, used_at FROM github_oauth_states WHERE state_hash = $1 FOR UPDATE`,
+		`SELECT id, code_verifier, created_at, used_at FROM github_oauth_states WHERE state_hash = $1 FOR UPDATE`,
 		hash(s.cfg.AuthTokenSecret+state),
-	).Scan(&id, &created, &usedAt); err != nil {
+	).Scan(&id, &codeVerifier, &created, &usedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return errors.New("invalid_github_oauth_state")
+			return "", errors.New("invalid_github_oauth_state")
 		}
-		return err
+		return "", err
 	}
 	if usedAt != nil || time.Since(created) > githubOAuthStateTTL {
-		return errors.New("invalid_github_oauth_state")
+		return "", errors.New("invalid_github_oauth_state")
 	}
 	if _, err := tx.Exec(ctx, `UPDATE github_oauth_states SET used_at = now() WHERE id = $1`, id); err != nil {
-		return err
+		return "", err
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return codeVerifier, nil
 }
 
 func (s *Server) createGitHubOAuthCompletion(ctx context.Context, accountID string) (string, error) {
@@ -280,11 +295,12 @@ WHERE created_at < now() - make_interval(secs => $1::int)
 	return err
 }
 
-func (s *Server) exchangeGitHubAccessToken(ctx context.Context, code string) (string, error) {
+func (s *Server) exchangeGitHubAccessToken(ctx context.Context, code, codeVerifier string) (string, error) {
 	form := url.Values{}
 	form.Set("client_id", s.cfg.GitHubClientID)
 	form.Set("client_secret", s.cfg.GitHubClientSecret)
 	form.Set("code", code)
+	form.Set("code_verifier", codeVerifier)
 	form.Set("redirect_uri", s.githubOAuthCallbackURL())
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, gitHubAccessTokenURL, strings.NewReader(form.Encode()))
@@ -309,6 +325,19 @@ func (s *Server) exchangeGitHubAccessToken(ctx context.Context, code string) (st
 		return "", errors.New("github_oauth_exchange_failed")
 	}
 	return parsed.AccessToken, nil
+}
+
+func newGitHubPKCECodeVerifier() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", errors.New("github_oauth_unavailable")
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+func gitHubPKCECodeChallenge(codeVerifier string) string {
+	sum := sha256.Sum256([]byte(codeVerifier))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 func (s *Server) fetchGitHubUserProfile(ctx context.Context, accessToken string) (gitHubUser, error) {
