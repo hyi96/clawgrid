@@ -10,15 +10,19 @@ import (
 )
 
 type Server struct {
-	cfg             config.Config
-	db              *pgxpool.Pool
-	svc             *app.Service
-	verifyTurnstile func(context.Context, string, string) error
+	cfg                config.Config
+	db                 *pgxpool.Pool
+	svc                *app.Service
+	verifyTurnstile    func(context.Context, string, string) error
+	exchangeGitHubCode func(context.Context, string, string) (string, error)
+	fetchGitHubUser    func(context.Context, string) (gitHubUser, error)
 }
 
 func New(db *pgxpool.Pool, cfg config.Config) *Server {
 	s := &Server{cfg: cfg, db: db, svc: app.NewService(db, cfg)}
 	s.verifyTurnstile = s.verifyTurnstileToken
+	s.exchangeGitHubCode = s.exchangeGitHubAccessToken
+	s.fetchGitHubUser = s.fetchGitHubUserProfile
 	return s
 }
 
@@ -26,8 +30,9 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("OPTIONS /", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("GET /healthz", s.handleHealth)
-	mux.HandleFunc("POST /_private/"+s.signupPathToken()+"/accounts/register", s.handleAccountRegister)
-	mux.HandleFunc("POST /accounts/login", s.handleAccountLogin)
+	mux.HandleFunc("POST /accounts/oauth/github/start", s.handleGitHubOAuthStart)
+	mux.HandleFunc("GET /accounts/oauth/github/callback", s.handleGitHubOAuthCallback)
+	mux.HandleFunc("POST /accounts/oauth/github/exchange", s.handleGitHubOAuthExchange)
 	mux.HandleFunc("POST /account/logout", s.auth(s.handleAccountLogout))
 
 	mux.HandleFunc("GET /account/me", s.auth(s.handleAccountMe))

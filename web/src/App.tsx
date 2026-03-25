@@ -142,17 +142,11 @@ type LeaderboardRow = {
 };
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "http://localhost:8080";
-const ACCOUNT_REGISTER_PATH =
-  (import.meta.env.VITE_ACCOUNT_REGISTER_PATH as string | undefined) ?? "/_private/clawgrid-signup/accounts/register";
 const TURNSTILE_SITEKEY = (import.meta.env.VITE_TURNSTILE_SITEKEY as string | undefined) ?? "";
 const AUTH_KEY = "clawgrid_auth_v2";
 const RESPOND_STATE_KEY_PREFIX = "clawgrid_respond_active_v1";
 const DISPATCH_JOB_SLOTS = 4;
 const DISPATCH_RESPONDER_SLOTS = 5;
-const ACCOUNT_USERNAME_LIMIT = 40;
-const ACCOUNT_EMAIL_MAX_BYTES = 320;
-const ACCOUNT_PASSWORD_MIN_BYTES = 8;
-const ACCOUNT_PASSWORD_MAX_BYTES = 72;
 
 const leaderboardBoards: Array<{ key: LeaderboardCategoryKey; label: string }> = [
   { key: "job_success_rate", label: "job success rate" },
@@ -268,15 +262,6 @@ function reconcileDispatchQueue<T>(
   }
 
   return next;
-}
-
-function normalizeEmailInput(raw: string): string {
-  return raw.trim().toLowerCase();
-}
-
-function isValidEmailSyntax(email: string): boolean {
-  if (!email || email.length > ACCOUNT_EMAIL_MAX_BYTES) return false;
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
 function formatCredits(v: number): string {
@@ -1500,72 +1485,92 @@ function LeaderboardPage() {
 }
 
 function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: AuthState | null) => void }) {
-  const [loginNameInput, setLoginNameInput] = useState("");
-  const [loginPasswordInput, setLoginPasswordInput] = useState("");
-  const [loginTurnstileToken, setLoginTurnstileToken] = useState("");
-  const [loginTurnstileResetNonce, setLoginTurnstileResetNonce] = useState(0);
-  const [loginModalOpen, setLoginModalOpen] = useState(false);
-  const [loginBusy, setLoginBusy] = useState(false);
-  const [nameInput, setNameInput] = useState("");
-  const [emailInput, setEmailInput] = useState("");
-  const [passwordInput, setPasswordInput] = useState("");
-  const [signupTurnstileToken, setSignupTurnstileToken] = useState("");
-  const [signupTurnstileResetNonce, setSignupTurnstileResetNonce] = useState(0);
-  const [signupModalOpen, setSignupModalOpen] = useState(false);
-  const [signupBusy, setSignupBusy] = useState(false);
+  const [oauthTurnstileToken, setOAuthTurnstileToken] = useState("");
+  const [oauthTurnstileResetNonce, setOAuthTurnstileResetNonce] = useState(0);
+  const [oauthModalOpen, setOAuthModalOpen] = useState(false);
+  const [oauthBusy, setOAuthBusy] = useState(false);
+  const [oauthExchangeBusy, setOAuthExchangeBusy] = useState(false);
   const [accountName, setAccountName] = useState("-");
   const [accountID, setAccountID] = useState("-");
-  const [accountEmail, setAccountEmail] = useState("");
+  const [githubLogin, setGitHubLogin] = useState("");
+  const [avatarURL, setAvatarURL] = useState("");
   const [wallet, setWallet] = useState<WalletInfo | null>(null);
   const [keys, setKeys] = useState<ApiKeyItem[]>([]);
   const [stats, setStats] = useState<AccountStats | null>(null);
   const [error, setError] = useState("");
   const [responderDescription, setResponderDescription] = useState("");
+  const oauthCompletionHandledRef = useRef(false);
 
   const isSignedOut = !auth;
   const turnstileEnabled = TURNSTILE_SITEKEY.trim() !== "";
   const responderDescriptionChars = Array.from(responderDescription).length;
 
-  const handleLoginTurnstileTokenChange = useCallback((token: string) => {
-    setLoginTurnstileToken(token);
+  const handleOAuthTurnstileTokenChange = useCallback((token: string) => {
+    setOAuthTurnstileToken(token);
   }, []);
 
-  const handleLoginTurnstileError = useCallback((message: string) => {
-    setError(message);
-  }, []);
-
-  const handleSignupTurnstileTokenChange = useCallback((token: string) => {
-    setSignupTurnstileToken(token);
-  }, []);
-
-  const handleSignupTurnstileError = useCallback((message: string) => {
+  const handleOAuthTurnstileError = useCallback((message: string) => {
     setError(message);
   }, []);
 
   useEffect(() => {
-    if (!loginModalOpen || !loginTurnstileToken || loginBusy) return;
-    void submitSignIn(loginTurnstileToken);
+    if (!oauthModalOpen || !oauthTurnstileToken || oauthBusy) return;
+    void startGitHubOAuth(oauthTurnstileToken);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loginModalOpen, loginTurnstileToken, loginBusy]);
+  }, [oauthModalOpen, oauthTurnstileToken, oauthBusy]);
 
   useEffect(() => {
-    if (!signupModalOpen || !signupTurnstileToken || signupBusy) return;
-    void submitSignUp(signupTurnstileToken);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signupModalOpen, signupTurnstileToken, signupBusy]);
+    if (auth || oauthCompletionHandledRef.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const completionCode = params.get("oauth_complete");
+    const oauthError = params.get("oauth_error");
+    if (!completionCode && !oauthError) return;
+
+    oauthCompletionHandledRef.current = true;
+    const clearParams = () => {
+      params.delete("oauth_complete");
+      params.delete("oauth_error");
+      const nextQuery = params.toString();
+      const nextURL = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}${window.location.hash}`;
+      window.history.replaceState({}, "", nextURL);
+    };
+
+    if (oauthError) {
+      setError(oauthError);
+      clearParams();
+      return;
+    }
+
+    setOAuthExchangeBusy(true);
+    setError("");
+    void api<{ account_id: string; session_token: string }>("/accounts/oauth/github/exchange", null, {
+      method: "POST",
+      body: JSON.stringify({ code: completionCode }),
+    })
+      .then((data) => {
+        const next: AccountAuth = { mode: "account", token: data.session_token };
+        setAuth(next);
+      })
+      .catch((e) => setError((e as Error).message))
+      .finally(() => {
+        clearParams();
+        setOAuthExchangeBusy(false);
+      });
+  }, [auth, setAuth]);
 
   const loadAccountData = async () => {
     if (!auth || auth.mode !== "account") return;
     try {
       const [me, walletData, keyData, statsData] = await Promise.all([
-        api<{ id: string; name: string; email?: string; responder_description?: string }>("/account/me", auth),
+        api<{ id: string; name: string; github_login?: string; avatar_url?: string; responder_description?: string }>("/account/me", auth),
         api<WalletInfo>("/wallets/current", auth),
         api<{ items: ApiKeyItem[] }>("/account/api-keys", auth),
         api<AccountStats>("/account/stats", auth),
       ]);
       setAccountID(me.id);
       setAccountName(me.name);
-      setAccountEmail(me.email ?? "");
+      setGitHubLogin(me.github_login ?? "");
+      setAvatarURL(me.avatar_url ?? "");
       setResponderDescription(me.responder_description ?? "");
       setWallet(walletData);
       setKeys(keyData.items);
@@ -1580,112 +1585,36 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth]);
 
-  const submitSignIn = async (turnstileToken: string) => {
-    setLoginBusy(true);
+  const startGitHubOAuth = async (turnstileToken: string) => {
+    setOAuthBusy(true);
     try {
-      const data = await api<{ account_id: string; session_token: string }>("/accounts/login", null, {
+      const data = await api<{ authorize_url: string }>("/accounts/oauth/github/start", null, {
         method: "POST",
-        body: JSON.stringify({ name: loginNameInput, password: loginPasswordInput, turnstile_token: turnstileToken }),
+        body: JSON.stringify({ turnstile_token: turnstileToken }),
       });
-      const next: AccountAuth = { mode: "account", token: data.session_token };
-      saveAuth(next);
-      setAuth(next);
-      setLoginPasswordInput("");
-      setLoginTurnstileToken("");
-      setLoginModalOpen(false);
+      setOAuthTurnstileToken("");
+      setOAuthModalOpen(false);
       setError("");
+      window.location.assign(data.authorize_url);
     } catch (e) {
       setError((e as Error).message);
-      if (turnstileEnabled) setLoginTurnstileResetNonce((value) => value + 1);
-      setLoginTurnstileToken("");
-      setLoginModalOpen(turnstileEnabled);
+      if (turnstileEnabled) setOAuthTurnstileResetNonce((value) => value + 1);
+      setOAuthTurnstileToken("");
+      setOAuthModalOpen(turnstileEnabled);
     } finally {
-      setLoginBusy(false);
+      setOAuthBusy(false);
     }
   };
 
-  const submitSignUp = async (turnstileToken: string) => {
-    setSignupBusy(true);
-    try {
-      const data = await api<{ account_id: string; api_key: string; session_token: string }>(ACCOUNT_REGISTER_PATH, null, {
-        method: "POST",
-        body: JSON.stringify({
-          name: nameInput,
-          email: normalizeEmailInput(emailInput),
-          password: passwordInput,
-          turnstile_token: turnstileToken,
-        }),
-      });
-      const next: AccountAuth = { mode: "account", token: data.session_token };
-      saveAuth(next);
-      setAuth(next);
-      setNameInput("");
-      setEmailInput("");
-      setPasswordInput("");
-      setSignupTurnstileToken("");
-      setSignupModalOpen(false);
-      setError("");
-    } catch (e) {
-      setError((e as Error).message);
-      if (turnstileEnabled) setSignupTurnstileResetNonce((value) => value + 1);
-      setSignupTurnstileToken("");
-      setSignupModalOpen(turnstileEnabled);
-    } finally {
-      setSignupBusy(false);
-    }
-  };
-
-  const openSignUpVerification = async () => {
-    const trimmedName = nameInput.trim();
-    if (!trimmedName) {
-      setError("name_required");
-      return;
-    }
-    if (Array.from(trimmedName).length > ACCOUNT_USERNAME_LIMIT) {
-      setError("name_too_long");
-      return;
-    }
-    const normalizedEmail = normalizeEmailInput(emailInput);
-    if (!normalizedEmail) {
-      setError("email_required");
-      return;
-    }
-    if (!isValidEmailSyntax(normalizedEmail)) {
-      setError("invalid_email");
-      return;
-    }
-    if (passwordInput.length < ACCOUNT_PASSWORD_MIN_BYTES) {
-      setError("password_too_short");
-      return;
-    }
-    if (passwordInput.length > ACCOUNT_PASSWORD_MAX_BYTES) {
-      setError("password_too_long");
-      return;
-    }
-
+  const openGitHubVerification = async () => {
     setError("");
-    setSignupTurnstileToken("");
+    setOAuthTurnstileToken("");
     if (turnstileEnabled) {
-      setSignupTurnstileResetNonce((value) => value + 1);
-      setSignupModalOpen(true);
+      setOAuthTurnstileResetNonce((value) => value + 1);
+      setOAuthModalOpen(true);
       return;
     }
-    await submitSignUp("");
-  };
-
-  const openSignInVerification = async () => {
-    try {
-      setError("");
-      setLoginTurnstileToken("");
-      if (turnstileEnabled) {
-        setLoginTurnstileResetNonce((value) => value + 1);
-        setLoginModalOpen(true);
-        return;
-      }
-      await submitSignIn("");
-    } catch (e) {
-      setError((e as Error).message);
-    }
+    await startGitHubOAuth("");
   };
 
   const createKey = async () => {
@@ -1742,160 +1671,63 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
       <main className="account-layout guest">
         <section className="account-guest-card">
           <h2 className="account-title">welcome to clawgrid</h2>
-          <p className="account-subtext">an account is required to use clawgrid.</p>
-          <div className="account-guest-auth-grid">
-            <div className="account-guest-form">
-              <p className="account-panel-label">sign in</p>
-              <input
-                className="account-description"
-                value={loginNameInput}
-                onChange={(e) => setLoginNameInput(e.target.value)}
-                placeholder="username"
-              />
-              <input
-                className="account-description"
-                type="password"
-                value={loginPasswordInput}
-                onChange={(e) => setLoginPasswordInput(e.target.value)}
-                placeholder="password"
-              />
-              <button className="account-btn primary" onClick={() => void openSignInVerification()} disabled={loginBusy}>
-                sign in
-              </button>
-            </div>
-
-            <div className="account-guest-form">
-              <p className="account-panel-label">create account</p>
-              <input
-                className="account-description"
-                value={nameInput}
-                onChange={(e) => setNameInput(e.target.value)}
-                placeholder="unique username"
-              />
-              <input
-                className="account-description"
-                value={emailInput}
-                onChange={(e) => setEmailInput(e.target.value)}
-                placeholder="email"
-              />
-              <input
-                className="account-description"
-                type="password"
-                value={passwordInput}
-                onChange={(e) => setPasswordInput(e.target.value)}
-                placeholder="password"
-              />
-              <button className="account-btn" onClick={() => void openSignUpVerification()} disabled={signupBusy}>
-                sign up
-              </button>
-            </div>
+          <p className="account-subtext">an account is required to use clawgrid. GitHub is now the only sign-in and account creation path.</p>
+          <div className="account-guest-actions">
+            <button className="account-btn primary" onClick={() => void openGitHubVerification()} disabled={oauthBusy || oauthExchangeBusy}>
+              continue with github
+            </button>
           </div>
+          <p className="account-muted">after signing in, open the Account page to copy or create API keys for agents.</p>
+          {oauthExchangeBusy && <p className="account-modal-status">finishing github sign-in...</p>}
 
-          {loginModalOpen && (
+          {oauthModalOpen && (
             <div
               className="account-modal-backdrop"
               role="presentation"
               onClick={() => {
-                if (loginBusy) return;
-                setLoginModalOpen(false);
-                setLoginTurnstileToken("");
-                setLoginTurnstileResetNonce((value) => value + 1);
+                if (oauthBusy) return;
+                setOAuthModalOpen(false);
+                setOAuthTurnstileToken("");
+                setOAuthTurnstileResetNonce((value) => value + 1);
               }}
             >
-              <div className="account-modal" role="dialog" aria-modal="true" aria-label="Complete login verification" onClick={(e) => e.stopPropagation()}>
+              <div className="account-modal" role="dialog" aria-modal="true" aria-label="Complete GitHub verification" onClick={(e) => e.stopPropagation()}>
                 <div className="account-modal-titlebar">
-                  <p className="account-modal-title">sign in</p>
+                  <p className="account-modal-title">continue with github</p>
                   <button
                     className="account-btn small"
                     onClick={() => {
-                      setLoginModalOpen(false);
-                      setLoginTurnstileToken("");
-                      setLoginTurnstileResetNonce((value) => value + 1);
+                      setOAuthModalOpen(false);
+                      setOAuthTurnstileToken("");
+                      setOAuthTurnstileResetNonce((value) => value + 1);
                     }}
-                    disabled={loginBusy}
+                    disabled={oauthBusy}
                   >
                     x
                   </button>
                 </div>
                 <div className="account-modal-body">
                   <p className="account-panel-label">complete verification</p>
-                  <p className="account-muted">finish Turnstile verification to sign in.</p>
-                  {!loginTurnstileToken && !loginBusy && (
+                  <p className="account-muted">finish Turnstile verification, then you will be sent to GitHub.</p>
+                  {!oauthTurnstileToken && !oauthBusy && (
                     <TurnstileWidget
                       sitekey={TURNSTILE_SITEKEY}
-                      resetNonce={loginTurnstileResetNonce}
-                      onTokenChange={handleLoginTurnstileTokenChange}
-                      onError={handleLoginTurnstileError}
+                      resetNonce={oauthTurnstileResetNonce}
+                      onTokenChange={handleOAuthTurnstileTokenChange}
+                      onError={handleOAuthTurnstileError}
                     />
                   )}
-                  {(loginTurnstileToken || loginBusy) && <p className="account-modal-status">signing in...</p>}
+                  {(oauthTurnstileToken || oauthBusy) && <p className="account-modal-status">redirecting to github...</p>}
                 </div>
                 <div className="account-modal-actions">
                   <button
                     className="account-btn small"
                     onClick={() => {
-                      setLoginModalOpen(false);
-                      setLoginTurnstileToken("");
-                      setLoginTurnstileResetNonce((value) => value + 1);
+                      setOAuthModalOpen(false);
+                      setOAuthTurnstileToken("");
+                      setOAuthTurnstileResetNonce((value) => value + 1);
                     }}
-                    disabled={loginBusy}
-                  >
-                    cancel
-                  </button>
-                </div>
-                {error && <p className="inline-error">{error}</p>}
-              </div>
-            </div>
-          )}
-
-          {signupModalOpen && (
-            <div
-              className="account-modal-backdrop"
-              role="presentation"
-              onClick={() => {
-                if (signupBusy) return;
-                setSignupModalOpen(false);
-                setSignupTurnstileToken("");
-                setSignupTurnstileResetNonce((value) => value + 1);
-              }}
-            >
-              <div className="account-modal" role="dialog" aria-modal="true" aria-label="Complete verification" onClick={(e) => e.stopPropagation()}>
-                <div className="account-modal-titlebar">
-                  <p className="account-modal-title">create account</p>
-                  <button
-                    className="account-btn small"
-                    onClick={() => {
-                      setSignupModalOpen(false);
-                      setSignupTurnstileToken("");
-                      setSignupTurnstileResetNonce((value) => value + 1);
-                    }}
-                    disabled={signupBusy}
-                  >
-                    x
-                  </button>
-                </div>
-                <div className="account-modal-body">
-                  <p className="account-panel-label">complete verification</p>
-                  <p className="account-muted">finish Turnstile verification to create your account.</p>
-                  {!signupTurnstileToken && !signupBusy && (
-                    <TurnstileWidget
-                      sitekey={TURNSTILE_SITEKEY}
-                      resetNonce={signupTurnstileResetNonce}
-                      onTokenChange={handleSignupTurnstileTokenChange}
-                      onError={handleSignupTurnstileError}
-                    />
-                  )}
-                  {(signupTurnstileToken || signupBusy) && <p className="account-modal-status">creating account...</p>}
-                </div>
-                <div className="account-modal-actions">
-                  <button
-                    className="account-btn small"
-                    onClick={() => {
-                      setSignupModalOpen(false);
-                      setSignupTurnstileToken("");
-                      setSignupTurnstileResetNonce((value) => value + 1);
-                    }}
-                    disabled={signupBusy}
+                    disabled={oauthBusy}
                   >
                     cancel
                   </button>
@@ -1917,7 +1749,8 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
         <div>
           <h2 className="account-title">account overview: {accountName}</h2>
           <p className="account-muted">account id: {accountID}</p>
-          {accountEmail && <p className="account-muted">email: {accountEmail}</p>}
+          {githubLogin && <p className="account-muted">github: @{githubLogin}</p>}
+          {avatarURL && <p className="account-muted">avatar: synced from github</p>}
         </div>
         <button
           className="account-btn small"

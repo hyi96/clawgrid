@@ -10,159 +10,7 @@ import (
 	"unicode/utf8"
 
 	"clawgrid/internal/domain"
-	"github.com/jackc/pgx/v5/pgconn"
 )
-
-type accountRegisterBody struct {
-	Name           string `json:"name"`
-	Email          string `json:"email"`
-	Password       string `json:"password"`
-	TurnstileToken string `json:"turnstile_token"`
-}
-
-func validateAccountRegisterBody(body accountRegisterBody) (string, string, error) {
-	name := strings.TrimSpace(body.Name)
-	email := normalizeEmail(body.Email)
-	password := body.Password
-	if name == "" {
-		return "", "", errors.New("name_required")
-	}
-	if email == "" {
-		return "", "", errors.New("email_required")
-	}
-	if !isValidEmailSyntax(email) {
-		return "", "", errors.New("invalid_email")
-	}
-	if utf8.RuneCountInString(name) > accountUsernameLimit {
-		return "", "", errors.New("name_too_long")
-	}
-	if len(password) < accountPasswordMinBytes {
-		return "", "", errors.New("password_too_short")
-	}
-	if len(password) > accountPasswordMaxBytes {
-		return "", "", errors.New("password_too_long")
-	}
-
-	return name, email, nil
-}
-
-func (s *Server) handleAccountRegister(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	if s.cfg.FrontendOrigin != "" && strings.TrimSpace(r.Header.Get("Origin")) != s.cfg.FrontendOrigin {
-		respondErr(w, http.StatusForbidden, "signup_frontend_only")
-		return
-	}
-	var body accountRegisterBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		respondErr(w, http.StatusBadRequest, "bad body")
-		return
-	}
-	if err := s.enforceRateLimit(ctx, "signup_rate_limited", signupRateLimitSpecs(clientIP(r.RemoteAddr), body.Name, body.Email)...); err != nil {
-		if err.Error() == "signup_rate_limited" {
-			respondRateLimit(w, err.Error())
-			return
-		}
-		respondErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	name, email, err := validateAccountRegisterBody(body)
-	if err != nil {
-		respondErr(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if err := s.verifyTurnstile(r.Context(), body.TurnstileToken, r.RemoteAddr); err != nil {
-		status := http.StatusBadRequest
-		if err.Error() == "turnstile_unavailable" {
-			status = http.StatusServiceUnavailable
-		}
-		respondErr(w, status, err.Error())
-		return
-	}
-	passwordHash, err := hashPassword(body.Password)
-	if err != nil {
-		respondErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	accountID := domain.NewID("acct")
-	if _, err := s.db.Exec(ctx, `INSERT INTO accounts(id, name, email, password_hash) VALUES ($1,$2,$3,$4)`, accountID, name, email, passwordHash); err != nil {
-		if isAccountsNameUniqueViolation(err) {
-			respondErr(w, http.StatusConflict, "username_taken")
-			return
-		}
-		if isAccountsEmailUniqueViolation(err) {
-			respondErr(w, http.StatusConflict, "email_taken")
-			return
-		}
-		respondErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	_ = s.ensureWallet(ctx, domain.OwnerAccount, accountID)
-	_, _ = s.db.Exec(ctx, `UPDATE wallets SET balance = GREATEST(balance, $1) WHERE owner_type = 'account' AND owner_id = $2`, s.cfg.AccountInitialBalance, accountID)
-	_, apiKey, err := s.createAPIKey(ctx, accountID, "default")
-	if err != nil {
-		respondErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	sessionToken, err := s.createAccountSession(ctx, accountID)
-	if err != nil {
-		respondErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	respondJSON(w, http.StatusCreated, map[string]any{"account_id": accountID, "api_key": apiKey, "session_token": sessionToken})
-}
-
-func (s *Server) handleAccountLogin(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	var body struct {
-		Name           string `json:"name"`
-		Password       string `json:"password"`
-		TurnstileToken string `json:"turnstile_token"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		respondErr(w, http.StatusBadRequest, "bad body")
-		return
-	}
-	if err := s.enforceRateLimit(ctx, "login_rate_limited", loginRateLimitSpecs(clientIP(r.RemoteAddr), body.Name)...); err != nil {
-		if err.Error() == "login_rate_limited" {
-			respondRateLimit(w, err.Error())
-			return
-		}
-		respondErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	name := strings.TrimSpace(body.Name)
-	if name == "" || body.Password == "" {
-		respondErr(w, http.StatusBadRequest, "name_and_password_required")
-		return
-	}
-	if err := s.verifyTurnstile(r.Context(), body.TurnstileToken, r.RemoteAddr); err != nil {
-		status := http.StatusBadRequest
-		if err.Error() == "turnstile_unavailable" {
-			status = http.StatusServiceUnavailable
-		}
-		respondErr(w, status, err.Error())
-		return
-	}
-	var accountID, passwordHash string
-	if err := s.db.QueryRow(ctx, `SELECT id, password_hash FROM accounts WHERE lower(name) = lower($1)`, name).Scan(&accountID, &passwordHash); err != nil {
-		respondErr(w, http.StatusUnauthorized, "invalid_credentials")
-		return
-	}
-	if passwordHash == "" {
-		respondErr(w, http.StatusUnauthorized, "password_not_set")
-		return
-	}
-	if err := comparePassword(passwordHash, body.Password); err != nil {
-		respondErr(w, http.StatusUnauthorized, "invalid_credentials")
-		return
-	}
-	sessionToken, err := s.createAccountSession(ctx, accountID)
-	if err != nil {
-		respondErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	respondJSON(w, http.StatusOK, map[string]any{"account_id": accountID, "session_token": sessionToken})
-}
 
 func (s *Server) handleAccountLogout(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
 	if actor.OwnerType != domain.OwnerAccount {
@@ -185,15 +33,16 @@ func (s *Server) handleAccountMe(w http.ResponseWriter, r *http.Request, actor d
 		respondErr(w, http.StatusForbidden, "account required")
 		return
 	}
-	var name, email, responderDescription string
-	if err := s.db.QueryRow(r.Context(), `SELECT name, COALESCE(email, ''), COALESCE(responder_description, '') FROM accounts WHERE id = $1`, actor.OwnerID).Scan(&name, &email, &responderDescription); err != nil {
+	var name, githubLogin, avatarURL, responderDescription string
+	if err := s.db.QueryRow(r.Context(), `SELECT name, COALESCE(github_login, ''), COALESCE(avatar_url, ''), COALESCE(responder_description, '') FROM accounts WHERE id = $1`, actor.OwnerID).Scan(&name, &githubLogin, &avatarURL, &responderDescription); err != nil {
 		respondErr(w, http.StatusNotFound, "account not found")
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]any{
 		"id":                    actor.OwnerID,
 		"name":                  name,
-		"email":                 email,
+		"github_login":          githubLogin,
+		"avatar_url":            avatarURL,
 		"responder_description": responderDescription,
 		"auth_credential_type":  actor.AuthCredentialType,
 	})
@@ -303,22 +152,6 @@ func buildAccountStats(feedbackGiven, repliesReceived, responderUp, responderDow
 		"dispatch_accuracy":   dispatchAccuracy,
 		"responses_submitted": responsesSubmitted,
 	}
-}
-
-func isAccountsNameUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) {
-		return false
-	}
-	return pgErr.Code == "23505" && pgErr.ConstraintName == "accounts_name_lower_unique"
-}
-
-func isAccountsEmailUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) {
-		return false
-	}
-	return pgErr.Code == "23505" && pgErr.ConstraintName == "accounts_email_lower_unique"
 }
 
 func (s *Server) handleAPIKeysList(w http.ResponseWriter, r *http.Request, actor domain.Actor) {

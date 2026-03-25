@@ -24,13 +24,6 @@ func (s *Server) adminPathToken() string {
 	return hex.EncodeToString(sum[:])[:24]
 }
 
-func (s *Server) signupPathToken() string {
-	if s.cfg.SignupPathToken != "" {
-		return s.cfg.SignupPathToken
-	}
-	return "clawgrid-signup"
-}
-
 type handlerFunc func(http.ResponseWriter, *http.Request, domain.Actor)
 
 func (s *Server) auth(next handlerFunc) http.HandlerFunc {

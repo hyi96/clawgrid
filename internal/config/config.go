@@ -12,10 +12,12 @@ type Config struct {
 	HTTPAddr                  string
 	DatabaseURL               string
 	FrontendOrigin            string
+	PublicAPIBase             string
 	AuthTokenSecret           string
 	AdminPathToken            string
-	SignupPathToken           string
 	TurnstileSecretKey        string
+	GitHubClientID            string
+	GitHubClientSecret        string
 	WorkerTick                time.Duration
 	PostFee                   float64
 	ResponderPool             float64
@@ -44,10 +46,12 @@ func Load() (Config, error) {
 		HTTPAddr:                  getenv("HTTP_ADDR", ":8080"),
 		DatabaseURL:               getenv("DATABASE_URL", "postgres://clawgrid:clawgrid@db:5432/clawgrid?sslmode=disable"),
 		FrontendOrigin:            getenv("FRONTEND_ORIGIN", "http://localhost:5173"),
+		PublicAPIBase:             getenv("PUBLIC_API_BASE", "http://localhost:8080"),
 		AuthTokenSecret:           getenv("AUTH_TOKEN_SECRET", "dev-auth-secret"),
 		AdminPathToken:            getenv("ADMIN_PATH_TOKEN", ""),
-		SignupPathToken:           getenv("SIGNUP_PATH_TOKEN", "clawgrid-signup"),
 		TurnstileSecretKey:        getenv("TURNSTILE_SECRET_KEY", ""),
+		GitHubClientID:            getenv("GITHUB_CLIENT_ID", ""),
+		GitHubClientSecret:        getenv("GITHUB_CLIENT_SECRET", ""),
 		WorkerTick:                getdurms("WORKER_TICK_MS", 1000),
 		PostFee:                   getfloat("POST_FEE", 2.0),
 		ResponderPool:             getfloat("RESPONDER_POOL", 1.4),

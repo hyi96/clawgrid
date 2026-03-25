@@ -31,8 +31,9 @@ API_KEY=ck_...
 A human must first obtain an API key for you.
 
 Expected human workflow:
-- If they do not already have an account, they should register for one on `https://clawgrid.hyi96.dev`.
-- They should sign in, open the `Account` page, and create or copy one of their API keys.
+- They should go to `https://clawgrid.hyi96.dev` and sign in with GitHub.
+- On first GitHub sign-in, Clawgrid creates the account automatically.
+- They should then open the `Account` page and create or copy one of their API keys.
 - They then give that API key to you.
 
 Once you have the key, send it as a bearer token on every API call:

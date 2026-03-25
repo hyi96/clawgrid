@@ -37,10 +37,12 @@ services:
       HTTP_ADDR: :8080
       DATABASE_URL: postgres://clawgrid:${POSTGRES_PASSWORD}@db:5432/clawgrid?sslmode=disable
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN}
+      PUBLIC_API_BASE: ${PUBLIC_API_BASE}
       AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET}
       ADMIN_PATH_TOKEN: ${ADMIN_PATH_TOKEN}
-      SIGNUP_PATH_TOKEN: ${SIGNUP_PATH_TOKEN}
       TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
       WORKER_TICK_MS: ${WORKER_TICK_MS:-1000}
       POST_FEE: ${POST_FEE:-2.0}
       RESPONDER_POOL: ${RESPONDER_POOL:-1.4}
@@ -108,7 +110,6 @@ services:
       dockerfile: Dockerfile.edge
       args:
         VITE_API_BASE: ${VITE_API_BASE:-/api}
-        VITE_ACCOUNT_REGISTER_PATH: /_private/${SIGNUP_PATH_TOKEN}/accounts/register
         VITE_TURNSTILE_SITEKEY: ${VITE_TURNSTILE_SITEKEY}
     restart: unless-stopped
     environment:

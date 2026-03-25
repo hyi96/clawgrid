@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,6 +25,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+var testGitHubUserSeq int64
+
 type integrationHarness struct {
 	app       *Server
 	server    *httptest.Server
@@ -32,8 +35,6 @@ type integrationHarness struct {
 	baseURL   string
 	schema    string
 }
-
-const testAccountRegisterPath = "/_private/clawgrid-signup/accounts/register"
 
 func TestResponderWorkReturnsEligibleSystemPoolCandidate(t *testing.T) {
 	t.Parallel()
@@ -913,296 +914,167 @@ VALUES ($1,$2,$3,'account',$4,'completed',$5,$5,$5,$6,0,2,'up',$7)`,
 	}
 }
 
-func TestAccountRegisterRequiresUniqueUsernameAndSeparatesPasswordLoginFromAPIKeys(t *testing.T) {
+func TestGitHubOAuthStartRequiresFrontendOrigin(t *testing.T) {
 	t.Parallel()
 
-	h := newIntegrationHarness(t)
+	h := newIntegrationHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.PublicAPIBase = "http://localhost:8080"
+		cfg.GitHubClientID = "github-client-id"
+		cfg.GitHubClientSecret = "github-client-secret"
+	})
+	h.requestJSON(t, http.MethodPost, "/accounts/oauth/github/start", "", map[string]any{"turnstile_token": "good-token"}, http.StatusForbidden, nil)
+}
 
-	var created struct {
-		AccountID    string `json:"account_id"`
-		APIKey       string `json:"api_key"`
-		SessionToken string `json:"session_token"`
+func TestGitHubOAuthStartRequiresTurnstileWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.PublicAPIBase = "http://localhost:8080"
+		cfg.GitHubClientID = "github-client-id"
+		cfg.GitHubClientSecret = "github-client-secret"
+		cfg.TurnstileSecretKey = "turnstile-test-secret"
+	})
+	h.app.verifyTurnstile = func(_ context.Context, token, _ string) error {
+		if token == "good-token" {
+			return nil
+		}
+		return errors.New("invalid_turnstile")
 	}
-	h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterPath, "", map[string]string{
+
+	h.requestJSONWithHeaders(t, http.MethodPost, "/accounts/oauth/github/start", "", map[string]string{
 		"Origin": h.app.cfg.FrontendOrigin,
-	}, map[string]any{
-		"name":     "tom",
-		"email":    "tom@example.com",
-		"password": "password123",
-	}, http.StatusCreated, &created)
+	}, map[string]any{}, http.StatusBadRequest, nil)
 
-	h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterPath, "", map[string]string{
+	var start struct {
+		AuthorizeURL string `json:"authorize_url"`
+	}
+	h.requestJSONWithHeaders(t, http.MethodPost, "/accounts/oauth/github/start", "", map[string]string{
 		"Origin": h.app.cfg.FrontendOrigin,
-	}, map[string]any{
-		"name":     "Tom",
-		"email":    "tom-2@example.com",
-		"password": "password123",
-	}, http.StatusConflict, nil)
-
-	apiKeyCountBefore := h.scalarInt(t, `SELECT COUNT(*)::int FROM api_keys WHERE account_id = $1 AND revoked_at IS NULL`, created.AccountID)
-
-	var loggedIn struct {
-		AccountID    string `json:"account_id"`
-		SessionToken string `json:"session_token"`
+	}, map[string]any{"turnstile_token": "good-token"}, http.StatusOK, &start)
+	if !strings.Contains(start.AuthorizeURL, "github.com/login/oauth/authorize") {
+		t.Fatalf("authorize_url = %q, want github authorize url", start.AuthorizeURL)
 	}
-	h.requestJSON(t, http.MethodPost, "/accounts/login", "", map[string]any{
-		"name":     "TOM",
-		"password": "password123",
-	}, http.StatusOK, &loggedIn)
-
-	if loggedIn.AccountID != created.AccountID {
-		t.Fatalf("login account_id = %q, want %q", loggedIn.AccountID, created.AccountID)
+	parsed, err := url.Parse(start.AuthorizeURL)
+	if err != nil {
+		t.Fatalf("parse authorize_url: %v", err)
 	}
-	if loggedIn.SessionToken == "" {
-		t.Fatal("login session_token was empty")
+	if parsed.Query().Get("code_challenge") == "" {
+		t.Fatalf("authorize_url missing code_challenge: %q", start.AuthorizeURL)
+	}
+	if parsed.Query().Get("code_challenge_method") != "S256" {
+		t.Fatalf("code_challenge_method = %q, want %q", parsed.Query().Get("code_challenge_method"), "S256")
+	}
+}
+
+func TestGitHubOAuthStartRateLimited(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.PublicAPIBase = "http://localhost:8080"
+		cfg.GitHubClientID = "github-client-id"
+		cfg.GitHubClientSecret = "github-client-secret"
+	})
+
+	for i := 0; i < githubOAuthStartIPLimit; i++ {
+		h.requestJSONWithHeaders(t, http.MethodPost, "/accounts/oauth/github/start", "", map[string]string{
+			"Origin": h.app.cfg.FrontendOrigin,
+		}, map[string]any{}, http.StatusOK, nil)
 	}
 
-	apiKeyCountAfter := h.scalarInt(t, `SELECT COUNT(*)::int FROM api_keys WHERE account_id = $1 AND revoked_at IS NULL`, created.AccountID)
-	if apiKeyCountAfter != apiKeyCountBefore {
-		t.Fatalf("api key count after password login = %d, want %d", apiKeyCountAfter, apiKeyCountBefore)
+	h.requestJSONWithHeaders(t, http.MethodPost, "/accounts/oauth/github/start", "", map[string]string{
+		"Origin": h.app.cfg.FrontendOrigin,
+	}, map[string]any{}, http.StatusTooManyRequests, nil)
+}
+
+func TestGitHubOAuthFlowCreatesAccountAndUpsertsByGitHubUserID(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.PublicAPIBase = "http://localhost:8080"
+		cfg.GitHubClientID = "github-client-id"
+		cfg.GitHubClientSecret = "github-client-secret"
+		cfg.TurnstileSecretKey = "turnstile-test-secret"
+	})
+	h.app.verifyTurnstile = func(_ context.Context, token, _ string) error {
+		if token == "good-token" {
+			return nil
+		}
+		return errors.New("invalid_turnstile")
+	}
+
+	accountID, sessionToken := h.completeGitHubOAuthLogin(t, 1001, "tom", "good-token")
+	if accountID == "" || sessionToken == "" {
+		t.Fatalf("unexpected oauth login result: account=%q session=%q", accountID, sessionToken)
 	}
 
 	var me struct {
-		ID    string `json:"id"`
-		Name  string `json:"name"`
-		Email string `json:"email"`
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		GitHubLogin string `json:"github_login"`
 	}
-	h.requestJSON(t, http.MethodGet, "/account/me", loggedIn.SessionToken, nil, http.StatusOK, &me)
-	if me.ID != created.AccountID {
-		t.Fatalf("me.id = %q, want %q", me.ID, created.AccountID)
+	h.requestJSON(t, http.MethodGet, "/account/me", sessionToken, nil, http.StatusOK, &me)
+	if me.ID != accountID {
+		t.Fatalf("me.id = %q, want %q", me.ID, accountID)
 	}
 	if me.Name != "tom" {
 		t.Fatalf("me.name = %q, want %q", me.Name, "tom")
 	}
-	if me.Email != "tom@example.com" {
-		t.Fatalf("me.email = %q, want %q", me.Email, "tom@example.com")
+	if me.GitHubLogin != "tom" {
+		t.Fatalf("me.github_login = %q, want %q", me.GitHubLogin, "tom")
 	}
 
-	var meByAPIKey struct {
-		ID string `json:"id"`
+	secondAccountID, secondSessionToken := h.completeGitHubOAuthLogin(t, 1001, "tom-renamed", "good-token")
+	if secondAccountID != accountID {
+		t.Fatalf("second oauth login account_id = %q, want %q", secondAccountID, accountID)
 	}
-	h.requestJSON(t, http.MethodGet, "/account/me", created.APIKey, nil, http.StatusOK, &meByAPIKey)
-	if meByAPIKey.ID != created.AccountID {
-		t.Fatalf("api key auth me.id = %q, want %q", meByAPIKey.ID, created.AccountID)
+	if secondSessionToken == "" {
+		t.Fatal("second session token was empty")
 	}
 
-	var keyList struct {
+	h.requestJSON(t, http.MethodGet, "/account/me", secondSessionToken, nil, http.StatusOK, &me)
+	if me.Name != "tom-renamed" {
+		t.Fatalf("updated me.name = %q, want %q", me.Name, "tom-renamed")
+	}
+	if me.GitHubLogin != "tom-renamed" {
+		t.Fatalf("updated me.github_login = %q, want %q", me.GitHubLogin, "tom-renamed")
+	}
+
+	activeKeyCount := h.scalarInt(t, `SELECT COUNT(*)::int FROM api_keys WHERE account_id = $1 AND revoked_at IS NULL`, accountID)
+	if activeKeyCount != 1 {
+		t.Fatalf("active api key count = %d, want 1", activeKeyCount)
+	}
+}
+
+func TestAccountLogoutRevokesOAuthSessionButLeavesAPIKeyUsable(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.PublicAPIBase = "http://localhost:8080"
+		cfg.GitHubClientID = "github-client-id"
+		cfg.GitHubClientSecret = "github-client-secret"
+	})
+
+	accountID, sessionToken := h.completeGitHubOAuthLogin(t, 1002, "tom", "")
+
+	var keys struct {
 		Items []struct {
 			ID string `json:"id"`
 		} `json:"items"`
 	}
-	h.requestJSON(t, http.MethodGet, "/account/api-keys", created.SessionToken, nil, http.StatusOK, &keyList)
-	if len(keyList.Items) != 1 {
-		t.Fatalf("key list count = %d, want 1", len(keyList.Items))
-	}
-	if keyList.Items[0].ID != created.APIKey {
-		t.Fatalf("listed api key id = %q, want %q", keyList.Items[0].ID, created.APIKey)
-	}
-}
-
-func TestAccountRegisterRequiresFrontendOrigin(t *testing.T) {
-	t.Parallel()
-
-	h := newIntegrationHarness(t)
-
-	h.requestJSON(t, http.MethodPost, testAccountRegisterPath, "", map[string]any{
-		"name":     "tom",
-		"email":    "tom@example.com",
-		"password": "password123",
-	}, http.StatusForbidden, nil)
-}
-
-func TestAccountRegisterRequiresValidUniqueEmail(t *testing.T) {
-	t.Parallel()
-
-	h := newIntegrationHarness(t)
-
-	h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterPath, "", map[string]string{
-		"Origin": h.app.cfg.FrontendOrigin,
-	}, map[string]any{
-		"name":     "tom",
-		"email":    "not-an-email",
-		"password": "password123",
-	}, http.StatusBadRequest, nil)
-
-	h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterPath, "", map[string]string{
-		"Origin": h.app.cfg.FrontendOrigin,
-	}, map[string]any{
-		"name":     "tom",
-		"email":    "tom@example.com",
-		"password": "password123",
-	}, http.StatusCreated, nil)
-
-	h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterPath, "", map[string]string{
-		"Origin": h.app.cfg.FrontendOrigin,
-	}, map[string]any{
-		"name":     "tom-2",
-		"email":    "TOM@example.com",
-		"password": "password123",
-	}, http.StatusConflict, nil)
-}
-
-func TestAccountRegisterRateLimited(t *testing.T) {
-	t.Parallel()
-
-	h := newIntegrationHarness(t)
-
-	for i := 0; i < signupUsernameLimit; i++ {
-		status := http.StatusConflict
-		if i == 0 {
-			status = http.StatusCreated
-		}
-		h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterPath, "", map[string]string{
-			"Origin": h.app.cfg.FrontendOrigin,
-		}, map[string]any{
-			"name":     "tom",
-			"email":    fmt.Sprintf("tom-%d@example.com", i),
-			"password": "password123",
-		}, status, nil)
+	h.requestJSON(t, http.MethodGet, "/account/api-keys", sessionToken, nil, http.StatusOK, &keys)
+	if len(keys.Items) != 1 {
+		t.Fatalf("api key count = %d, want 1", len(keys.Items))
 	}
 
-	h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterPath, "", map[string]string{
-		"Origin": h.app.cfg.FrontendOrigin,
-	}, map[string]any{
-		"name":     "tom",
-		"email":    "tom-final@example.com",
-		"password": "password123",
-	}, http.StatusTooManyRequests, nil)
-}
-
-func TestAccountRegisterRequiresTurnstileWhenConfigured(t *testing.T) {
-	t.Parallel()
-
-	h := newIntegrationHarnessWithConfig(t, func(cfg *config.Config) {
-		cfg.TurnstileSecretKey = "turnstile-test-secret"
-	})
-	h.app.verifyTurnstile = func(_ context.Context, token, _ string) error {
-		if token == "good-token" {
-			return nil
-		}
-		return errors.New("invalid_turnstile")
-	}
-
-	h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterPath, "", map[string]string{
-		"Origin": h.app.cfg.FrontendOrigin,
-	}, map[string]any{
-		"name":     "tom",
-		"email":    "tom@example.com",
-		"password": "password123",
-	}, http.StatusBadRequest, nil)
-
-	var created struct {
-		AccountID string `json:"account_id"`
-	}
-	h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterPath, "", map[string]string{
-		"Origin": h.app.cfg.FrontendOrigin,
-	}, map[string]any{
-		"name":            "tom",
-		"email":           "tom@example.com",
-		"password":        "password123",
-		"turnstile_token": "good-token",
-	}, http.StatusCreated, &created)
-	if created.AccountID == "" {
-		t.Fatal("account_id was empty")
-	}
-}
-
-func TestAccountLoginRequiresTurnstileWhenConfigured(t *testing.T) {
-	t.Parallel()
-
-	h := newIntegrationHarnessWithConfig(t, func(cfg *config.Config) {
-		cfg.TurnstileSecretKey = "turnstile-test-secret"
-	})
-	h.app.verifyTurnstile = func(_ context.Context, token, _ string) error {
-		if token == "good-token" {
-			return nil
-		}
-		return errors.New("invalid_turnstile")
-	}
-
-	h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterPath, "", map[string]string{
-		"Origin": h.app.cfg.FrontendOrigin,
-	}, map[string]any{
-		"name":            "tom",
-		"email":           "tom@example.com",
-		"password":        "password123",
-		"turnstile_token": "good-token",
-	}, http.StatusCreated, nil)
-
-	h.requestJSON(t, http.MethodPost, "/accounts/login", "", map[string]any{
-		"name":     "tom",
-		"password": "password123",
-	}, http.StatusBadRequest, nil)
-
-	var loggedIn struct {
-		AccountID    string `json:"account_id"`
-		SessionToken string `json:"session_token"`
-	}
-	h.requestJSON(t, http.MethodPost, "/accounts/login", "", map[string]any{
-		"name":            "tom",
-		"password":        "password123",
-		"turnstile_token": "good-token",
-	}, http.StatusOK, &loggedIn)
-	if loggedIn.AccountID == "" || loggedIn.SessionToken == "" {
-		t.Fatalf("unexpected login payload: %+v", loggedIn)
-	}
-}
-
-func TestAccountLoginRateLimited(t *testing.T) {
-	t.Parallel()
-
-	h := newIntegrationHarness(t)
-	created := h.registerAccount(t, "tom")
-
-	for i := 0; i < loginPairLimit; i++ {
-		h.requestJSON(t, http.MethodPost, "/accounts/login", "", map[string]any{
-			"name":     "tom",
-			"password": "wrong-password",
-		}, http.StatusUnauthorized, nil)
-	}
+	h.requestJSON(t, http.MethodPost, "/account/logout", sessionToken, nil, http.StatusOK, nil)
+	h.requestJSON(t, http.MethodGet, "/account/me", sessionToken, nil, http.StatusUnauthorized, nil)
 
 	var me struct {
 		ID string `json:"id"`
 	}
-	h.requestJSON(t, http.MethodPost, "/accounts/login", "", map[string]any{
-		"name":     "tom",
-		"password": "wrong-password",
-	}, http.StatusTooManyRequests, nil)
-
-	h.requestJSON(t, http.MethodGet, "/account/me", created.apiKey, nil, http.StatusOK, &me)
-	if me.ID != created.accountID {
-		t.Fatalf("me.id = %q, want %q", me.ID, created.accountID)
-	}
-}
-
-func TestAccountLogoutRevokesSessionButLeavesAPIKeyUsable(t *testing.T) {
-	t.Parallel()
-
-	h := newIntegrationHarness(t)
-
-	var created struct {
-		AccountID    string `json:"account_id"`
-		APIKey       string `json:"api_key"`
-		SessionToken string `json:"session_token"`
-	}
-	h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterPath, "", map[string]string{
-		"Origin": h.app.cfg.FrontendOrigin,
-	}, map[string]any{
-		"name":     "tom",
-		"email":    "tom@example.com",
-		"password": "password123",
-	}, http.StatusCreated, &created)
-
-	h.requestJSON(t, http.MethodPost, "/account/logout", created.SessionToken, nil, http.StatusOK, nil)
-
-	h.requestJSON(t, http.MethodGet, "/account/me", created.SessionToken, nil, http.StatusUnauthorized, nil)
-
-	var me struct {
-		ID string `json:"id"`
-	}
-	h.requestJSON(t, http.MethodGet, "/account/me", created.APIKey, nil, http.StatusOK, &me)
-	if me.ID != created.AccountID {
-		t.Fatalf("api key auth me.id = %q, want %q", me.ID, created.AccountID)
+	h.requestJSON(t, http.MethodGet, "/account/me", keys.Items[0].ID, nil, http.StatusOK, &me)
+	if me.ID != accountID {
+		t.Fatalf("api key auth me.id = %q, want %q", me.ID, accountID)
 	}
 }
 
@@ -2014,9 +1886,11 @@ func newIntegrationHarnessWithConfig(t *testing.T, mutate func(*config.Config)) 
 		HTTPAddr:                  ":0",
 		DatabaseURL:               appURL,
 		FrontendOrigin:            "http://localhost:5173",
+		PublicAPIBase:             "http://localhost:8080",
 		AuthTokenSecret:           "integration-secret",
 		AdminPathToken:            "integration-admin",
-		SignupPathToken:           "clawgrid-signup",
+		GitHubClientID:            "",
+		GitHubClientSecret:        "",
 		WorkerTick:                time.Second,
 		PostFee:                   2.0,
 		ResponderPool:             1.4,
@@ -2082,19 +1956,97 @@ func withSearchPath(baseURL, schema string) string {
 
 func (h *integrationHarness) registerAccount(t *testing.T, name string) testAccount {
 	t.Helper()
-	var out struct {
-		AccountID string `json:"account_id"`
-		APIKey    string `json:"api_key"`
+	accountID, err := h.app.upsertGitHubAccount(context.Background(), gitHubUser{
+		ID:        atomic.AddInt64(&testGitHubUserSeq, 1),
+		Login:     name,
+		AvatarURL: "https://example.com/avatar.png",
+	})
+	if err != nil {
+		t.Fatalf("registerAccount failed: %v", err)
 	}
-	emailLocal := strings.ToLower(strings.ReplaceAll(domain.NewID("acct"), "_", "-"))
-	h.requestJSONWithHeaders(t, http.MethodPost, testAccountRegisterPath, "", map[string]string{
+	var apiKey string
+	if err := h.appPool.QueryRow(context.Background(), `SELECT id FROM api_keys WHERE account_id = $1 AND revoked_at IS NULL ORDER BY created_at ASC LIMIT 1`, accountID).Scan(&apiKey); err != nil {
+		t.Fatalf("lookup api key failed: %v", err)
+	}
+	return testAccount{accountID: accountID, apiKey: apiKey}
+}
+
+func (h *integrationHarness) completeGitHubOAuthLogin(t *testing.T, userID int64, login, turnstileToken string) (string, string) {
+	t.Helper()
+
+	code := fmt.Sprintf("oauth-code-%d", userID)
+	accessToken := fmt.Sprintf("access-token-%d", userID)
+	var expectedVerifier string
+	h.app.exchangeGitHubCode = func(_ context.Context, gotCode, gotVerifier string) (string, error) {
+		if gotCode != code {
+			return "", errors.New("unexpected_github_code")
+		}
+		if gotVerifier == "" || gotVerifier != expectedVerifier {
+			return "", errors.New("unexpected_github_code_verifier")
+		}
+		return accessToken, nil
+	}
+	h.app.fetchGitHubUser = func(_ context.Context, gotToken string) (gitHubUser, error) {
+		if gotToken != accessToken {
+			return gitHubUser{}, errors.New("unexpected_github_access_token")
+		}
+		return gitHubUser{
+			ID:        userID,
+			Login:     login,
+			AvatarURL: "https://example.com/avatar.png",
+		}, nil
+	}
+
+	var start struct {
+		AuthorizeURL string `json:"authorize_url"`
+	}
+	body := map[string]any{}
+	if turnstileToken != "" {
+		body["turnstile_token"] = turnstileToken
+	}
+	h.requestJSONWithHeaders(t, http.MethodPost, "/accounts/oauth/github/start", "", map[string]string{
 		"Origin": h.app.cfg.FrontendOrigin,
-	}, map[string]any{
-		"name":     name,
-		"email":    name + "+" + emailLocal + "@example.com",
-		"password": "password123",
-	}, http.StatusCreated, &out)
-	return testAccount{accountID: out.AccountID, apiKey: out.APIKey}
+	}, body, http.StatusOK, &start)
+
+	parsedAuthorizeURL, err := url.Parse(start.AuthorizeURL)
+	if err != nil {
+		t.Fatalf("parse authorize url: %v", err)
+	}
+	state := parsedAuthorizeURL.Query().Get("state")
+	if state == "" {
+		t.Fatal("authorize URL did not include state")
+	}
+	expectedVerifier = h.scalarString(t, `SELECT code_verifier FROM github_oauth_states WHERE state_hash = $1`, hash(h.app.cfg.AuthTokenSecret+state))
+
+	req := httptest.NewRequest(http.MethodGet, h.baseURL+"/accounts/oauth/github/callback?state="+url.QueryEscape(state)+"&code="+url.QueryEscape(code), nil)
+	rec := httptest.NewRecorder()
+	h.server.Config.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("oauth callback status = %d, want %d, body=%s", rec.Code, http.StatusSeeOther, rec.Body.String())
+	}
+
+	location := rec.Header().Get("Location")
+	if location == "" {
+		t.Fatal("oauth callback redirect location was empty")
+	}
+	parsedLocation, err := url.Parse(location)
+	if err != nil {
+		t.Fatalf("parse oauth callback redirect: %v", err)
+	}
+	completionCode := parsedLocation.Query().Get("oauth_complete")
+	if completionCode == "" {
+		t.Fatalf("oauth callback redirect missing completion code: %s", location)
+	}
+
+	var exchanged struct {
+		AccountID    string `json:"account_id"`
+		SessionToken string `json:"session_token"`
+	}
+	h.requestJSON(t, http.MethodPost, "/accounts/oauth/github/exchange", "", map[string]any{
+		"code": completionCode,
+	}, http.StatusOK, &exchanged)
+
+	return exchanged.AccountID, exchanged.SessionToken
 }
 
 func (h *integrationHarness) createSession(t *testing.T, apiKey string) string {
@@ -2256,6 +2208,16 @@ func (h *integrationHarness) scalarInt(t *testing.T, query string, args ...any) 
 	var value int
 	if err := h.appPool.QueryRow(context.Background(), query, args...).Scan(&value); err != nil {
 		t.Fatalf("scalarInt failed: %v", err)
+	}
+	return value
+}
+
+func (h *integrationHarness) scalarString(t *testing.T, query string, args ...any) string {
+	t.Helper()
+
+	var value string
+	if err := h.appPool.QueryRow(context.Background(), query, args...).Scan(&value); err != nil {
+		t.Fatalf("scalarString failed: %v", err)
 	}
 	return value
 }

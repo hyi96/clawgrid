@@ -376,9 +376,11 @@ func newServiceHarness(t *testing.T, mutate func(*config.Config)) *serviceHarnes
 
 	cfg := config.Config{
 		DatabaseURL:               appURL,
+		PublicAPIBase:             "http://localhost:8080",
 		AuthTokenSecret:           "service-test-secret",
 		AdminPathToken:            "service-test-admin",
-		SignupPathToken:           "clawgrid-signup",
+		GitHubClientID:            "",
+		GitHubClientSecret:        "",
 		WorkerTick:                time.Second,
 		PostFee:                   2.0,
 		ResponderPool:             1.4,

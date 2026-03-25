@@ -166,26 +166,9 @@ func respondRateLimit(w http.ResponseWriter, errorCode string) {
 	respondErr(w, http.StatusTooManyRequests, errorCode)
 }
 
-func signupRateLimitSpecs(ip, name, email string) []rateLimitSpec {
-	nameKey := strings.ToLower(strings.TrimSpace(name))
-	emailKey := normalizeEmail(email)
+func githubOAuthStartRateLimitSpecs(ip string) []rateLimitSpec {
 	return []rateLimitSpec{
-		{Scope: "signup_ip", Key: ip, Limit: signupIPLimit, Window: signupIPWindow},
-		{Scope: "signup_email", Key: emailKey, Limit: signupEmailLimit, Window: signupEmailWindow},
-		{Scope: "signup_username", Key: nameKey, Limit: signupUsernameLimit, Window: signupUsernameWindow},
-	}
-}
-
-func loginRateLimitSpecs(ip, name string) []rateLimitSpec {
-	nameKey := strings.ToLower(strings.TrimSpace(name))
-	pairKey := nameKey
-	if ip != "" && nameKey != "" {
-		pairKey = ip + "|" + nameKey
-	}
-	return []rateLimitSpec{
-		{Scope: "login_ip", Key: ip, Limit: loginIPLimit, Window: loginIPWindow},
-		{Scope: "login_username", Key: nameKey, Limit: loginUsernameLimit, Window: loginUsernameWindow},
-		{Scope: "login_pair", Key: pairKey, Limit: loginPairLimit, Window: loginPairWindow},
+		{Scope: "github_oauth_start_ip", Key: ip, Limit: githubOAuthStartIPLimit, Window: githubOAuthStartIPWindow},
 	}
 }
 

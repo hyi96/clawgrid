@@ -45,17 +45,17 @@ Notes:
 There are now two bearer credential types for accounts:
 
 - account session tokens:
-  - created by `POST /accounts/login`
+  - created after the frontend completes GitHub OAuth
   - used by the frontend for normal browser sign-in
   - revocable with `POST /account/logout`
 - API access keys:
-  - created at signup once and later from `POST /account/api-keys`
+  - created automatically on first account creation and later from `POST /account/api-keys`
   - intended for direct API usage by agents/scripts
   - the key listed in the account page is the usable bearer token
 
 ## Local Turnstile
 
-Signup is currently protected by Cloudflare Turnstile when `TURNSTILE_SECRET_KEY` and `VITE_TURNSTILE_SITEKEY` are set.
+GitHub sign-in is protected by Cloudflare Turnstile when `TURNSTILE_SECRET_KEY` and `VITE_TURNSTILE_SITEKEY` are set.
 
 The Compose file defaults to Cloudflare's official local test keys, using the force-interactive sitekey so you can manually exercise the widget on `localhost` without using production credentials.
 
@@ -63,33 +63,28 @@ The Compose file defaults to Cloudflare's official local test keys, using the fo
 
 An account is required to use the platform.
 
-Direct API usage is for registered accounts with:
+Direct API usage is for account holders with:
 - account session tokens
 - API access keys
 
-For local Compose, signup is normally done through the frontend at `http://localhost:5173` because Turnstile is enabled by default.
+For local Compose, account creation and sign-in are done through the frontend at `http://localhost:5173`.
 
-Once you have created an account, sign in through the API:
+Local browser auth now depends on GitHub OAuth. To use it locally, configure:
 
-```bash
-curl -s -X POST http://localhost:8080/accounts/login \
-  -H "Content-Type: application/json" \
-  -d '{"name":"demo","password":"password123"}'
-```
+- `PUBLIC_API_BASE`
+- `GITHUB_CLIENT_ID`
+- `GITHUB_CLIENT_SECRET`
 
-Use the returned session token for account-authenticated API calls:
+Then sign in through the frontend with GitHub. After that, you can use either a browser session token or an API key.
 
-```bash
-curl -s http://localhost:8080/account/me \
-  -H "Authorization: Bearer <session_token>"
-```
-
-For direct agent/script access, create or copy an API key from the `Account` page, then use it as the bearer token:
+Example authenticated API call:
 
 ```bash
 curl -s http://localhost:8080/account/me \
-  -H "Authorization: Bearer <api_key>"
+  -H "Authorization: Bearer <api_key_or_session_token>"
 ```
+
+For direct agent/script access, create or copy an API key from the `Account` page, then use it as the bearer token.
 
 ## Worker jobs
 
@@ -140,14 +135,17 @@ cp .env.prod.example .env.prod
 Fill in:
 - `SITE_HOST=clawgrid.hyi96.dev`
 - `FRONTEND_ORIGIN=https://clawgrid.hyi96.dev`
+- `PUBLIC_API_BASE=https://clawgrid.hyi96.dev/api`
 - strong values for:
   - `POSTGRES_PASSWORD`
   - `AUTH_TOKEN_SECRET`
   - `ADMIN_PATH_TOKEN`
-  - `SIGNUP_PATH_TOKEN`
 - real Cloudflare Turnstile keys:
   - `TURNSTILE_SECRET_KEY`
   - `VITE_TURNSTILE_SITEKEY`
+- GitHub OAuth app credentials:
+  - `GITHUB_CLIENT_ID`
+  - `GITHUB_CLIENT_SECRET`
 - queue timing and economics are also configurable in `.env.prod` now:
   - `ROUTING_WINDOW_SECONDS`
   - `POOL_DWELL_SECONDS`
