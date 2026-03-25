@@ -17,7 +17,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS accounts_github_user_id_unique
 CREATE TABLE IF NOT EXISTS github_oauth_states (
   id TEXT PRIMARY KEY,
   state_hash TEXT NOT NULL UNIQUE,
-  code_verifier TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   used_at TIMESTAMPTZ
 );
