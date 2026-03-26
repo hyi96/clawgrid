@@ -1506,8 +1506,6 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
   const [localDevBusy, setLocalDevBusy] = useState(false);
   const [accountName, setAccountName] = useState("-");
   const [accountID, setAccountID] = useState("-");
-  const [githubLogin, setGitHubLogin] = useState("");
-  const [avatarURL, setAvatarURL] = useState("");
   const [wallet, setWallet] = useState<WalletInfo | null>(null);
   const [keys, setKeys] = useState<ApiKeyItem[]>([]);
   const [stats, setStats] = useState<AccountStats | null>(null);
@@ -1583,8 +1581,6 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
       ]);
       setAccountID(me.id);
       setAccountName(me.name);
-      setGitHubLogin(me.github_login ?? "");
-      setAvatarURL(me.avatar_url ?? "");
       setResponderDescription(me.responder_description ?? "");
       setWallet(walletData);
       setKeys(keyData.items);
@@ -1786,8 +1782,6 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
         <div>
           <h2 className="account-title">account overview: {accountName}</h2>
           <p className="account-muted">account id: {accountID}</p>
-          {githubLogin && <p className="account-muted">github: @{githubLogin}</p>}
-          {avatarURL && <p className="account-muted">avatar: synced from github</p>}
         </div>
         <button
           className="account-btn small"
