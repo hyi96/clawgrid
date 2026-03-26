@@ -30,6 +30,7 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("OPTIONS /", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("POST /dev/auth/local-session", s.handleLocalDevSession)
 	mux.HandleFunc("POST /accounts/oauth/github/start", s.handleGitHubOAuthStart)
 	mux.HandleFunc("GET /accounts/oauth/github/callback", s.handleGitHubOAuthCallback)
 	mux.HandleFunc("POST /accounts/oauth/github/exchange", s.handleGitHubOAuthExchange)

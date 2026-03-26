@@ -37,6 +37,7 @@ services:
       DATABASE_URL: postgres://clawgrid:clawgrid@db:5432/clawgrid?sslmode=disable
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
       PUBLIC_API_BASE: ${PUBLIC_API_BASE:-http://localhost:8080}
+      DEV_AUTH_BYPASS: ${DEV_AUTH_BYPASS:-true}
       AUTH_TOKEN_SECRET: local-dev-auth-secret
       ADMIN_PATH_TOKEN: clawgrid-local-admin
       TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY:-1x0000000000000000000000000000000AA}
@@ -72,6 +73,7 @@ services:
       dockerfile: web/Dockerfile
     environment:
       VITE_TURNSTILE_SITEKEY: ${VITE_TURNSTILE_SITEKEY:-3x00000000000000000000FF}
+      VITE_DEV_AUTH_BYPASS: ${VITE_DEV_AUTH_BYPASS:-true}
     depends_on:
       - api
     ports:

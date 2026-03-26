@@ -143,7 +143,9 @@ type LeaderboardRow = {
 
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "http://localhost:8080";
 const TURNSTILE_SITEKEY = (import.meta.env.VITE_TURNSTILE_SITEKEY as string | undefined) ?? "";
+const DEV_AUTH_BYPASS = ((import.meta.env.VITE_DEV_AUTH_BYPASS as string | undefined) ?? "").toLowerCase() === "true";
 const AUTH_KEY = "clawgrid_auth_v2";
+const LOCAL_DEV_BROWSER_ID_KEY = "clawgrid_local_dev_browser_v1";
 const RESPOND_STATE_KEY_PREFIX = "clawgrid_respond_active_v1";
 const DISPATCH_JOB_SLOTS = 4;
 const DISPATCH_RESPONDER_SLOTS = 5;
@@ -193,6 +195,17 @@ function loadAuth(): AuthState | null {
   } catch {
     return null;
   }
+}
+
+function localDevBrowserID(): string {
+  const existing = localStorage.getItem(LOCAL_DEV_BROWSER_ID_KEY);
+  if (existing) return existing;
+
+  const generated = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `browser-${Math.random().toString(36).slice(2)}-${Date.now().toString(36)}`;
+  localStorage.setItem(LOCAL_DEV_BROWSER_ID_KEY, generated);
+  return generated;
 }
 
 function fmtTime(v?: string): string {
@@ -1490,6 +1503,7 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
   const [oauthModalOpen, setOAuthModalOpen] = useState(false);
   const [oauthBusy, setOAuthBusy] = useState(false);
   const [oauthExchangeBusy, setOAuthExchangeBusy] = useState(false);
+  const [localDevBusy, setLocalDevBusy] = useState(false);
   const [accountName, setAccountName] = useState("-");
   const [accountID, setAccountID] = useState("-");
   const [githubLogin, setGitHubLogin] = useState("");
@@ -1617,6 +1631,23 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
     await startGitHubOAuth("");
   };
 
+  const startLocalDevSession = async () => {
+    setLocalDevBusy(true);
+    setError("");
+    try {
+      const data = await api<{ account_id: string; session_token: string }>("/dev/auth/local-session", null, {
+        method: "POST",
+        body: JSON.stringify({ browser_id: localDevBrowserID() }),
+      });
+      const next: AccountAuth = { mode: "account", token: data.session_token };
+      setAuth(next);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLocalDevBusy(false);
+    }
+  };
+
   const createKey = async () => {
     if (!auth || auth.mode !== "account") return;
     try {
@@ -1673,12 +1704,18 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
           <h2 className="account-title">welcome to clawgrid</h2>
           <p className="account-subtext">an account is required to use clawgrid. GitHub is now the only sign-in and account creation path.</p>
           <div className="account-guest-actions">
-            <button className="account-btn primary" onClick={() => void openGitHubVerification()} disabled={oauthBusy || oauthExchangeBusy}>
+            <button className="account-btn primary" onClick={() => void openGitHubVerification()} disabled={oauthBusy || oauthExchangeBusy || localDevBusy}>
               continue with github
             </button>
+            {DEV_AUTH_BYPASS && (
+              <button className="account-btn" onClick={() => void startLocalDevSession()} disabled={oauthBusy || oauthExchangeBusy || localDevBusy}>
+                continue as local dev account
+              </button>
+            )}
           </div>
           <p className="account-muted">after signing in, open the Account page to copy or create API keys for agents.</p>
           {oauthExchangeBusy && <p className="account-modal-status">finishing github sign-in...</p>}
+          {localDevBusy && <p className="account-modal-status">creating local dev session...</p>}
 
           {oauthModalOpen && (
             <div

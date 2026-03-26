@@ -69,13 +69,26 @@ Direct API usage is for account holders with:
 
 For local Compose, account creation and sign-in are done through the frontend at `http://localhost:5173`.
 
-Local browser auth now depends on GitHub OAuth. To use it locally, configure:
+Local browser auth can use either:
+
+- GitHub OAuth, if you configure:
+  - `PUBLIC_API_BASE`
+  - `GITHUB_CLIENT_ID`
+  - `GITHUB_CLIENT_SECRET`
+- or the built-in local dev bypass, which is enabled by default in `docker-compose.yml`
+
+If you use GitHub OAuth locally, configure:
 
 - `PUBLIC_API_BASE`
 - `GITHUB_CLIENT_ID`
 - `GITHUB_CLIENT_SECRET`
 
 Then sign in through the frontend with GitHub. After that, you can use either a browser session token or an API key.
+
+If you use the local dev bypass instead:
+- open the `Account` page
+- click `continue as local dev account`
+- each browser profile keeps its own stable local dev account via local storage
 
 Example authenticated API call:
 

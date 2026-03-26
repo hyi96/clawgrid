@@ -13,6 +13,7 @@ type Config struct {
 	DatabaseURL               string
 	FrontendOrigin            string
 	PublicAPIBase             string
+	DevAuthBypass             bool
 	AuthTokenSecret           string
 	AdminPathToken            string
 	TurnstileSecretKey        string
@@ -47,6 +48,7 @@ func Load() (Config, error) {
 		DatabaseURL:               getenv("DATABASE_URL", "postgres://clawgrid:clawgrid@db:5432/clawgrid?sslmode=disable"),
 		FrontendOrigin:            getenv("FRONTEND_ORIGIN", "http://localhost:5173"),
 		PublicAPIBase:             getenv("PUBLIC_API_BASE", "http://localhost:8080"),
+		DevAuthBypass:             getbool("DEV_AUTH_BYPASS", false),
 		AuthTokenSecret:           getenv("AUTH_TOKEN_SECRET", "dev-auth-secret"),
 		AdminPathToken:            getenv("ADMIN_PATH_TOKEN", ""),
 		TurnstileSecretKey:        getenv("TURNSTILE_SECRET_KEY", ""),
@@ -149,4 +151,19 @@ func getdurms(k string, d int) time.Duration {
 		return time.Duration(d) * time.Millisecond
 	}
 	return time.Duration(i) * time.Millisecond
+}
+
+func getbool(k string, d bool) bool {
+	v := getenv(k, "")
+	if v == "" {
+		return d
+	}
+	switch v {
+	case "1", "true", "TRUE", "True", "yes", "YES", "on", "ON":
+		return true
+	case "0", "false", "FALSE", "False", "no", "NO", "off", "OFF":
+		return false
+	default:
+		return d
+	}
 }

@@ -925,6 +925,74 @@ func TestGitHubOAuthStartRequiresFrontendOrigin(t *testing.T) {
 	h.requestJSON(t, http.MethodPost, "/accounts/oauth/github/start", "", map[string]any{"turnstile_token": "good-token"}, http.StatusForbidden, nil)
 }
 
+func TestLocalDevSessionRequiresBypass(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+	h.requestJSONWithHeaders(t, http.MethodPost, "/dev/auth/local-session", "", map[string]string{
+		"Origin": h.app.cfg.FrontendOrigin,
+	}, map[string]any{"browser_id": "chrome-profile"}, http.StatusNotFound, nil)
+}
+
+func TestLocalDevSessionCreatesStablePerBrowserAccount(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.DevAuthBypass = true
+	})
+
+	var chromeFirst struct {
+		AccountID    string `json:"account_id"`
+		SessionToken string `json:"session_token"`
+	}
+	h.requestJSONWithHeaders(t, http.MethodPost, "/dev/auth/local-session", "", map[string]string{
+		"Origin": h.app.cfg.FrontendOrigin,
+	}, map[string]any{"browser_id": "chrome-profile"}, http.StatusOK, &chromeFirst)
+	if chromeFirst.AccountID == "" || chromeFirst.SessionToken == "" {
+		t.Fatalf("unexpected first local dev login result: %+v", chromeFirst)
+	}
+
+	var chromeMe struct {
+		ID string `json:"id"`
+	}
+	h.requestJSON(t, http.MethodGet, "/account/me", chromeFirst.SessionToken, nil, http.StatusOK, &chromeMe)
+	if chromeMe.ID != chromeFirst.AccountID {
+		t.Fatalf("chrome me.id = %q, want %q", chromeMe.ID, chromeFirst.AccountID)
+	}
+
+	var chromeSecond struct {
+		AccountID    string `json:"account_id"`
+		SessionToken string `json:"session_token"`
+	}
+	h.requestJSONWithHeaders(t, http.MethodPost, "/dev/auth/local-session", "", map[string]string{
+		"Origin": h.app.cfg.FrontendOrigin,
+	}, map[string]any{"browser_id": "chrome-profile"}, http.StatusOK, &chromeSecond)
+	if chromeSecond.AccountID != chromeFirst.AccountID {
+		t.Fatalf("same browser created different account: %q vs %q", chromeSecond.AccountID, chromeFirst.AccountID)
+	}
+	if chromeSecond.SessionToken == chromeFirst.SessionToken {
+		t.Fatalf("same browser reused session token: %q", chromeSecond.SessionToken)
+	}
+
+	var edge struct {
+		AccountID    string `json:"account_id"`
+		SessionToken string `json:"session_token"`
+	}
+	h.requestJSONWithHeaders(t, http.MethodPost, "/dev/auth/local-session", "", map[string]string{
+		"Origin": h.app.cfg.FrontendOrigin,
+	}, map[string]any{"browser_id": "edge-profile"}, http.StatusOK, &edge)
+	if edge.AccountID == chromeFirst.AccountID {
+		t.Fatalf("different browsers shared account: %q", edge.AccountID)
+	}
+
+	if got := h.scalarInt(t, `SELECT COUNT(*)::int FROM api_keys WHERE account_id = $1 AND revoked_at IS NULL`, chromeFirst.AccountID); got != 1 {
+		t.Fatalf("chrome api key count = %d, want 1", got)
+	}
+	if got := h.scalarInt(t, `SELECT COUNT(*)::int FROM api_keys WHERE account_id = $1 AND revoked_at IS NULL`, edge.AccountID); got != 1 {
+		t.Fatalf("edge api key count = %d, want 1", got)
+	}
+}
+
 func TestGitHubOAuthStartRequiresTurnstileWhenConfigured(t *testing.T) {
 	t.Parallel()
 
