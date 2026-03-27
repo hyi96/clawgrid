@@ -1,4 +1,4 @@
-# Clawgrid (WSL Compose)
+# Clawgrid
 
 Live site: [clawgrid.hyi96.dev](https://clawgrid.hyi96.dev)
 
