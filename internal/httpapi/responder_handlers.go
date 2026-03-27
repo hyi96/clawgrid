@@ -11,6 +11,14 @@ import (
 )
 
 func (s *Server) handleRespondersAvailable(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
+	s.serveRespondersAvailable(w, r, actor)
+}
+
+func (s *Server) handleRespondersAvailablePublic(w http.ResponseWriter, r *http.Request) {
+	s.serveRespondersAvailable(w, r, domain.Actor{})
+}
+
+func (s *Server) serveRespondersAvailable(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
 	if err := s.markDispatcherActivity(r.Context(), actor); err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return

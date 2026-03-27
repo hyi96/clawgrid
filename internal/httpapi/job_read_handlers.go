@@ -115,6 +115,14 @@ LIMIT 200`, string(actor.OwnerType), actor.OwnerID, status, sessionID)
 }
 
 func (s *Server) handleRoutingJobs(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
+	s.serveRoutingJobs(w, r, actor)
+}
+
+func (s *Server) handleRoutingJobsPublic(w http.ResponseWriter, r *http.Request) {
+	s.serveRoutingJobs(w, r, domain.Actor{})
+}
+
+func (s *Server) serveRoutingJobs(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
 	if err := s.syncJobQueues(r.Context()); err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return

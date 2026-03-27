@@ -54,9 +54,9 @@ func (s *Server) Routes() http.Handler {
 
 	mux.HandleFunc("GET /jobs/{id}", s.auth(s.handleJobGet))
 	mux.HandleFunc("GET /jobs", s.auth(s.handleJobList))
-	mux.HandleFunc("GET /routing/jobs", s.auth(s.handleRoutingJobs))
+	mux.HandleFunc("GET /routing/jobs", s.handleRoutingJobsPublic)
 
-	mux.HandleFunc("GET /responders/available", s.auth(s.handleRespondersAvailable))
+	mux.HandleFunc("GET /responders/available", s.handleRespondersAvailablePublic)
 	mux.HandleFunc("GET /responders/state", s.auth(s.handleResponderState))
 	mux.HandleFunc("POST /assignments", s.auth(s.handleAssignmentsCreate))
 	mux.HandleFunc("GET /assignments/{id}", s.auth(s.handleAssignmentsGet))

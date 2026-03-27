@@ -755,7 +755,7 @@ function AskPage({ auth }: { auth: AuthState | null }) {
   );
 }
 
-function DispatchPage({ auth }: { auth: AuthState | null }) {
+function DispatchPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequireAuth: () => void }) {
   const [jobs, setJobs] = useState<RoutingJob[]>([]);
   const [responders, setResponders] = useState<AvailableResponder[]>([]);
   const [error, setError] = useState("");
@@ -780,7 +780,6 @@ function DispatchPage({ auth }: { auth: AuthState | null }) {
   };
 
   const load = useCallback(async () => {
-    if (!auth) return;
     try {
       const [jobData, responderData] = await Promise.all([
         api<{ items: RoutingJob[] }>("/routing/jobs", auth),
@@ -804,20 +803,12 @@ function DispatchPage({ auth }: { auth: AuthState | null }) {
   }, [auth]);
 
   useEffect(() => {
-    if (auth) return;
-    setJobs([]);
-    setResponders([]);
-    setError("");
-  }, [auth]);
-
-  useEffect(() => {
-    if (!auth) return;
     void load();
     const id = window.setInterval(() => {
       void load();
     }, 3000);
     return () => window.clearInterval(id);
-  }, [auth, load]);
+  }, [load]);
 
   useEffect(() => {
     const id = window.setInterval(() => setNowTick(Date.now()), 1000);
@@ -825,7 +816,6 @@ function DispatchPage({ auth }: { auth: AuthState | null }) {
   }, []);
 
   useEffect(() => {
-    if (!auth) return;
     let jobsExpired = false;
     let respondersExpired = false;
 
@@ -844,7 +834,7 @@ function DispatchPage({ auth }: { auth: AuthState | null }) {
     if (jobsExpired || respondersExpired) {
       void load();
     }
-  }, [auth, load, nowTick]);
+  }, [load, nowTick]);
 
   useEffect(() => {
     if (!draggingResponder) return;
@@ -881,7 +871,10 @@ function DispatchPage({ auth }: { auth: AuthState | null }) {
   }, [draggingResponder]);
 
   const assign = async (jobID: string, responder: AvailableResponder) => {
-    if (!auth) return;
+    if (!auth) {
+      onRequireAuth();
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -973,7 +966,12 @@ function DispatchPage({ auth }: { auth: AuthState | null }) {
                 className={`dispatch-responder-card ${isDraggingSource ? "drag-source-hidden" : ""}`}
                 key={`${responder.owner_type}:${responder.owner_id}`}
                 onPointerDown={(e) => {
-                  if (busy || e.button !== 0) return;
+                  if (e.button !== 0) return;
+                  if (!auth) {
+                    onRequireAuth();
+                    return;
+                  }
+                  if (busy) return;
                   e.preventDefault();
                   setError("");
                   setDraggingResponder(responder);
@@ -1008,7 +1006,7 @@ function DispatchPage({ auth }: { auth: AuthState | null }) {
   );
 }
 
-function RespondPage({ auth }: { auth: AuthState | null }) {
+function RespondPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequireAuth: () => void }) {
   const [respondState, setRespondState] = useState<RespondState>("poll");
   const [candidates, setCandidates] = useState<PoolCandidate[]>([]);
   const [activeJob, setActiveJob] = useState<JobDetail | null>(null);
@@ -1076,7 +1074,10 @@ function RespondPage({ auth }: { auth: AuthState | null }) {
   };
 
   const poll = async () => {
-    if (!auth) return;
+    if (!auth) {
+      onRequireAuth();
+      return;
+    }
     pollAbortRef.current?.abort();
     const controller = new AbortController();
     let externalPollDetected = false;
@@ -1345,7 +1346,7 @@ function RespondPage({ auth }: { auth: AuthState | null }) {
     return (
       <main className="respond-poll-layout">
         <div className="respond-poll-center">
-          <button className="respond-main-btn" onClick={() => void poll()} disabled={isWaiting || !auth}>
+          <button className="respond-main-btn" onClick={() => void poll()} disabled={isWaiting}>
             poll jobs
           </button>
           {busy && pollingOrigin === "local" && (
@@ -1903,12 +1904,17 @@ function App() {
     setAuthState(next);
   };
 
+  const requireAccount = useCallback(() => {
+    window.alert("Sign in or create an account to assign responders or poll for work.");
+    setActivePage("account");
+  }, []);
+
   const renderPage = () => {
     if (booting) return <main className="placeholder-layout"><div className="placeholder-card">booting...</div></main>;
-    if (!auth && activePage !== "leaderboard" && activePage !== "account") return <AccountPage auth={null} setAuth={setAuth} />;
+    if (!auth && activePage === "ask") return <AccountPage auth={null} setAuth={setAuth} />;
     if (activePage === "ask") return <AskPage auth={auth} />;
-    if (activePage === "dispatch") return <DispatchPage auth={auth} />;
-    if (activePage === "respond") return <RespondPage auth={auth} />;
+    if (activePage === "dispatch") return <DispatchPage auth={auth} onRequireAuth={requireAccount} />;
+    if (activePage === "respond") return <RespondPage auth={auth} onRequireAuth={requireAccount} />;
     if (activePage === "leaderboard") return <LeaderboardPage />;
     return <AccountPage auth={auth} setAuth={setAuth} />;
   };

@@ -1393,6 +1393,42 @@ func TestRoutingAndPoolExposeTimeLimitAndBonusTip(t *testing.T) {
 	}
 }
 
+func TestPublicDispatchViewsWorkWithoutAuth(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "public routing preview")
+
+	h.execSQL(t, `
+INSERT INTO responder_availability(id, owner_type, owner_id, last_seen_at, poll_started_at)
+VALUES ($1, 'account', $2, now(), now())`,
+		domain.NewID("av"), responder.accountID)
+
+	var routing struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	h.requestJSON(t, http.MethodGet, "/routing/jobs", "", nil, http.StatusOK, &routing)
+	if len(routing.Items) != 1 || routing.Items[0].ID != jobID {
+		t.Fatalf("unexpected public routing payload: %+v", routing)
+	}
+
+	var available struct {
+		Items []struct {
+			OwnerID string `json:"owner_id"`
+		} `json:"items"`
+	}
+	h.requestJSON(t, http.MethodGet, "/responders/available", "", nil, http.StatusOK, &available)
+	if len(available.Items) != 1 || available.Items[0].OwnerID != responder.accountID {
+		t.Fatalf("unexpected public responders payload: %+v", available)
+	}
+}
+
 func TestPoolClaimReplyVoteFlowUpdatesStats(t *testing.T) {
 	t.Parallel()
 

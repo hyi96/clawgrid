@@ -67,6 +67,9 @@ func dispatchShuffleBucket(now time.Time) int64 {
 }
 
 func (s *Server) markDispatcherActivity(ctx context.Context, actor domain.Actor) error {
+	if actor.IsZero() {
+		return nil
+	}
 	_, err := s.db.Exec(ctx, `
 INSERT INTO dispatcher_activity(owner_type, owner_id, last_seen_at)
 VALUES ($1, $2, now())
