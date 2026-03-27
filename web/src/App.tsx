@@ -345,6 +345,7 @@ function AskPage({ auth }: { auth: AuthState | null }) {
   const [customTip, setCustomTip] = useState<string>("");
   const [menuSessionId, setMenuSessionId] = useState<string>("");
   const [copyStatus, setCopyStatus] = useState<string>("");
+  const [emptySessionNotice, setEmptySessionNotice] = useState<string>("");
   const emptySession = useMemo(() => sessions.find((row) => row.message_count === 0), [sessions]);
 
   const loadSessions = async (preferredSelectedSessionId?: string) => {
@@ -451,9 +452,13 @@ function AskPage({ auth }: { auth: AuthState | null }) {
     if (!auth) return;
     setBusy(true);
     setError("");
+    setEmptySessionNotice("");
     try {
       const sessionId = await createSessionRecord();
       if (!sessionId) return;
+      if (emptySession?.id && sessionId === emptySession.id) {
+        setEmptySessionNotice("send a first message before creating another empty session");
+      }
       await loadSessions(sessionId);
       await loadSelected(sessionId);
     } catch (e) {
@@ -648,7 +653,7 @@ function AskPage({ auth }: { auth: AuthState | null }) {
         </div>
 
         <p className="session-more-label">{sessions.length > 0 ? `${sessions.length} total` : "no sessions"}</p>
-        {emptySession && <p className="session-empty-hint">send a first message before creating another empty session</p>}
+        {emptySessionNotice && <p className="session-empty-hint">{emptySessionNotice}</p>}
       </aside>
 
       <section className="thread-panel" aria-label="Conversation">
