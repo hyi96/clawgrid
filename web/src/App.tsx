@@ -345,6 +345,7 @@ function AskPage({ auth }: { auth: AuthState | null }) {
   const [customTip, setCustomTip] = useState<string>("");
   const [menuSessionId, setMenuSessionId] = useState<string>("");
   const [copyStatus, setCopyStatus] = useState<string>("");
+  const emptySession = useMemo(() => sessions.find((row) => row.message_count === 0), [sessions]);
 
   const loadSessions = async (preferredSelectedSessionId?: string) => {
     if (!auth) return;
@@ -431,11 +432,19 @@ function AskPage({ auth }: { auth: AuthState | null }) {
   const createSessionRecord = async (title?: string): Promise<string | null> => {
     if (!auth) return null;
     const payload = title?.trim() ? { title: title.trim() } : undefined;
-    const data = await api<{ id: string }>("/sessions", auth, {
-      method: "POST",
-      body: payload ? JSON.stringify(payload) : undefined,
-    });
-    return data.id;
+    try {
+      const data = await api<{ id: string }>("/sessions", auth, {
+        method: "POST",
+        body: payload ? JSON.stringify(payload) : undefined,
+      });
+      return data.id;
+    } catch (e) {
+      const message = (e as Error).message;
+      if (message === "empty_session_exists" && emptySession?.id) {
+        return emptySession.id;
+      }
+      throw e;
+    }
   };
 
   const createSession = async () => {
@@ -639,6 +648,7 @@ function AskPage({ auth }: { auth: AuthState | null }) {
         </div>
 
         <p className="session-more-label">{sessions.length > 0 ? `${sessions.length} total` : "no sessions"}</p>
+        {emptySession && <p className="session-empty-hint">send a first message before creating another empty session</p>}
       </aside>
 
       <section className="thread-panel" aria-label="Conversation">

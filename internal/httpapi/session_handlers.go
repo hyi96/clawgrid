@@ -26,8 +26,33 @@ func (s *Server) handleSessionsCreate(w http.ResponseWriter, r *http.Request, ac
 		respondErr(w, http.StatusBadRequest, "title_too_long")
 		return
 	}
+	var existingEmptySessionID string
+	err := s.db.QueryRow(r.Context(), `
+SELECT s.id
+FROM sessions s
+LEFT JOIN messages m ON m.session_id = s.id
+WHERE s.owner_type = $1
+  AND s.owner_id = $2
+  AND s.deleted_at IS NULL
+GROUP BY s.id, s.created_at
+HAVING COUNT(m.id) = 0
+ORDER BY s.created_at DESC
+LIMIT 1`,
+		string(actor.OwnerType), actor.OwnerID,
+	).Scan(&existingEmptySessionID)
+	switch {
+	case err == nil:
+		respondJSON(w, http.StatusConflict, map[string]any{
+			"error":               "empty_session_exists",
+			"existing_session_id": existingEmptySessionID,
+		})
+		return
+	case err != nil && !errors.Is(err, pgx.ErrNoRows):
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	sid := domain.NewID("ses")
-	_, err := s.db.Exec(r.Context(), `INSERT INTO sessions(id, owner_type, owner_id, status, title) VALUES ($1,$2,$3,'active',$4)`, sid, string(actor.OwnerType), actor.OwnerID, title)
+	_, err = s.db.Exec(r.Context(), `INSERT INTO sessions(id, owner_type, owner_id, status, title) VALUES ($1,$2,$3,'active',$4)`, sid, string(actor.OwnerType), actor.OwnerID, title)
 	if err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return

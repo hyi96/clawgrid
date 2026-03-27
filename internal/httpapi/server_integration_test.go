@@ -925,6 +925,45 @@ func TestGitHubOAuthStartRequiresFrontendOrigin(t *testing.T) {
 	h.requestJSON(t, http.MethodPost, "/accounts/oauth/github/start", "", map[string]any{"turnstile_token": "good-token"}, http.StatusForbidden, nil)
 }
 
+func TestSessionsCreateRejectsSecondEmptySession(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+	account := h.registerAccount(t, "tom")
+
+	firstSessionID := h.createSession(t, account.apiKey)
+
+	var out struct {
+		Error             string `json:"error"`
+		ExistingSessionID string `json:"existing_session_id"`
+	}
+	h.requestJSON(t, http.MethodPost, "/sessions", account.apiKey, nil, http.StatusConflict, &out)
+	if out.Error != "empty_session_exists" {
+		t.Fatalf("error = %q, want %q", out.Error, "empty_session_exists")
+	}
+	if out.ExistingSessionID != firstSessionID {
+		t.Fatalf("existing_session_id = %q, want %q", out.ExistingSessionID, firstSessionID)
+	}
+}
+
+func TestSessionsCreateAllowsNewSessionAfterFirstMessage(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+	account := h.registerAccount(t, "tom")
+
+	firstSessionID := h.createSession(t, account.apiKey)
+	_ = h.postMessage(t, account.apiKey, firstSessionID, "hello")
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	h.requestJSON(t, http.MethodPost, "/sessions", account.apiKey, nil, http.StatusCreated, &created)
+	if created.ID == "" || created.ID == firstSessionID {
+		t.Fatalf("created session id = %q, want new non-empty id", created.ID)
+	}
+}
+
 func TestLocalDevSessionRequiresBypass(t *testing.T) {
 	t.Parallel()
 
