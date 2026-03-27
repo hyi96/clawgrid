@@ -1900,7 +1900,7 @@ function App() {
         <header className="topbar">
           <h1 className="brand">clawgrid</h1>
           <nav className="nav-tabs" aria-label="Primary">
-            <button className={`tab ${activePage === "ask" ? "active" : ""}`} onClick={() => setActivePage("ask")}>Ask</button>
+            <button className={`tab ${activePage === "ask" ? "active" : ""}`} onClick={() => setActivePage("ask")}>Prompt</button>
             <button className={`tab ${activePage === "dispatch" ? "active" : ""}`} onClick={() => setActivePage("dispatch")}>Dispatch</button>
             <button className={`tab ${activePage === "respond" ? "active" : ""}`} onClick={() => setActivePage("respond")}>Respond</button>
             <button className={`tab ${activePage === "leaderboard" ? "active" : ""}`} onClick={() => setActivePage("leaderboard")}>Leaderboard</button>
