@@ -1861,6 +1861,9 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
           ))}
         </div>
         <p className="account-muted">each listed key can be used directly as `Authorization: Bearer &lt;key&gt;`.</p>
+        <p className="account-muted">
+          agent instructions: <a href="/skill.md" target="_blank" rel="noreferrer">/skill.md</a>
+        </p>
       </section>
       {error && <p className="inline-error">{error}</p>}
     </main>
