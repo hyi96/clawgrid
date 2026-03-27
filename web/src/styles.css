@@ -1034,6 +1034,14 @@ textarea:disabled {
   text-align: right;
 }
 
+.dispatch-mobile-note {
+  display: none;
+  margin: -4px 0 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-soft);
+}
+
 .jobs-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   flex: 1;
@@ -1454,6 +1462,11 @@ textarea:disabled {
 @media (max-width: 960px) {
   .page-shell {
     padding: 10px;
+    align-items: stretch;
+  }
+
+  .panel {
+    padding: 10px;
   }
 
   .topbar,
@@ -1464,11 +1477,23 @@ textarea:disabled {
     align-items: flex-start;
   }
 
+  .topbar {
+    gap: 12px;
+  }
+
   .brand {
     font-size: 24px;
   }
 
+  .nav-tabs {
+    width: 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
   .tab {
+    flex: 0 0 auto;
     min-width: 84px;
     font-size: 14px;
     padding: 7px 12px;
@@ -1479,6 +1504,15 @@ textarea:disabled {
     grid-template-columns: 1fr;
     height: auto;
     min-height: 620px;
+  }
+
+  .session-rail {
+    max-height: 260px;
+  }
+
+  .thread-panel,
+  .respond-thread-panel {
+    min-height: 420px;
   }
 
   .dispatch-layout,
@@ -1522,6 +1556,10 @@ textarea:disabled {
     grid-template-columns: 70px 1fr 140px;
   }
 
+  .dispatch-mobile-note {
+    display: block;
+  }
+
   .thread-composer {
     grid-template-columns: 1fr auto;
   }
@@ -1545,5 +1583,235 @@ textarea:disabled {
 
   .feedback-line {
     font-size: 12px;
+  }
+}
+
+@media (max-width: 720px) {
+  .page-shell {
+    padding: 0;
+  }
+
+  .panel {
+    min-height: 100vh;
+    border-left: none;
+    border-right: none;
+    padding: 8px;
+  }
+
+  .topbar {
+    padding: 8px 10px;
+  }
+
+  .brand {
+    font-size: 21px;
+  }
+
+  .ask-layout,
+  .dispatch-layout,
+  .account-layout,
+  .leaderboard-layout,
+  .respond-poll-layout,
+  .respond-pool-layout,
+  .respond-active-layout {
+    margin-top: 8px;
+    padding: 10px;
+    gap: 12px;
+  }
+
+  .ask-layout {
+    min-height: calc(100vh - 116px);
+  }
+
+  .session-rail {
+    padding: 8px;
+    gap: 10px;
+    max-height: 230px;
+  }
+
+  .thread-panel,
+  .respond-thread-panel {
+    padding: 10px;
+    min-height: 52vh;
+  }
+
+  .thread-content,
+  .respond-thread-content {
+    padding-right: 4px;
+  }
+
+  .jobs-grid,
+  .responders-grid,
+  .respond-pool-grid,
+  .account-stats-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dispatch-job-slot,
+  .dispatch-responder-card,
+  .respond-pool-job-card {
+    min-height: 0;
+  }
+
+  .dispatch-layout {
+    gap: 18px;
+  }
+
+  .dispatch-card,
+  .dispatch-responder-card,
+  .respond-pool-card,
+  .placeholder-box {
+    min-height: 0;
+    padding: 12px;
+  }
+
+  .respond-side {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .respond-side-box {
+    min-height: 84px;
+    padding: 10px;
+    font-size: 14px;
+  }
+
+  .thread-head,
+  .respond-pool-head,
+  .section-head-row,
+  .account-header-row,
+  .leaderboard-head,
+  .account-api-head {
+    flex-wrap: wrap;
+  }
+
+  .feedback-row {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .feedback-btn {
+    width: 100%;
+    min-width: 0;
+    height: 46px;
+    font-size: 16px;
+  }
+
+  .thread-composer,
+  .respond-composer {
+    grid-template-columns: 1fr;
+  }
+
+  .chat-composer-leading {
+    justify-content: flex-start;
+  }
+
+  .thread-send,
+  .respond-send {
+    width: 100%;
+    min-width: 0;
+    min-height: 42px;
+  }
+
+  .respond-main-btn {
+    width: min(100%, 320px);
+  }
+
+  .respond-poll-center {
+    width: 100%;
+  }
+
+  .leaderboard-panel {
+    padding: 10px;
+  }
+
+  .leaderboard-table-head,
+  .leaderboard-row {
+    grid-template-columns: 56px minmax(0, 1fr) 110px;
+    gap: 8px;
+  }
+
+  .leaderboard-table-head {
+    font-size: 11px;
+  }
+
+  .leaderboard-row {
+    font-size: 13px;
+  }
+
+  .account-guest-card,
+  .account-panel {
+    padding: 14px;
+  }
+
+  .account-balance-value {
+    font-size: 26px;
+  }
+}
+
+@media (max-width: 560px) {
+  .topbar {
+    align-items: stretch;
+  }
+
+  .nav-tabs {
+    gap: 6px;
+  }
+
+  .tab {
+    min-width: 0;
+    padding: 7px 10px;
+    font-size: 13px;
+  }
+
+  .ask-layout {
+    min-height: calc(100vh - 104px);
+  }
+
+  .thread-panel,
+  .respond-thread-panel {
+    min-height: 48vh;
+  }
+
+  .respond-side {
+    grid-template-columns: 1fr;
+  }
+
+  .dispatch-card-pill {
+    font-size: 13px;
+  }
+
+  .dispatch-card-snippet,
+  .dispatch-mobile-note,
+  .respond-help-text,
+  .account-subtext {
+    font-size: 13px;
+  }
+
+  .thread-line,
+  .respond-thread-line {
+    max-width: 100%;
+    min-width: 0;
+    padding: 12px 14px;
+    font-size: 13px;
+  }
+
+  .time-limit-row {
+    padding: 8px 6px;
+  }
+
+  .thread-input,
+  .respond-composer-input {
+    padding: 9px 10px;
+    font-size: 14px;
+  }
+
+  .leaderboard-table-head {
+    display: none;
+  }
+
+  .leaderboard-row {
+    grid-template-columns: 1fr;
+    align-items: flex-start;
   }
 }

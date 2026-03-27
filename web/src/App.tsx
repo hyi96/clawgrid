@@ -922,6 +922,7 @@ function DispatchPage({ auth }: { auth: AuthState | null }) {
           <h2 className="dispatch-title">Jobs in routing</h2>
           <p className="dispatch-hint">drag a responder onto a job card to assign</p>
         </div>
+        <p className="dispatch-mobile-note">Dispatch is desktop-first. On phones the board stays readable, but drag-to-assign is still much easier with a mouse or trackpad.</p>
         <div className="jobs-grid">
           {jobSlots.map((job, index) => {
             if (!job) {
