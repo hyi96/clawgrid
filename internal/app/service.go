@@ -58,10 +58,12 @@ func (s *Service) ProcessAssignmentTimeouts(ctx context.Context) (int64, error) 
 
 	var affected int64
 	type timedOutAssignment struct {
-		assignmentID       string
-		jobID              string
-		responderOwnerType string
-		responderOwnerID   string
+		assignmentID        string
+		jobID               string
+		dispatcherOwnerType string
+		dispatcherOwnerID   string
+		responderOwnerType  string
+		responderOwnerID    string
 	}
 	type expiredClaim struct {
 		jobID          string
@@ -70,7 +72,7 @@ func (s *Service) ProcessAssignmentTimeouts(ctx context.Context) (int64, error) 
 	}
 
 	assignmentRows, err := tx.Query(ctx, `
-SELECT a.id, a.job_id, a.responder_owner_type, a.responder_owner_id
+SELECT a.id, a.job_id, a.dispatcher_owner_type, a.dispatcher_owner_id, a.responder_owner_type, a.responder_owner_id
 FROM assignments a
 JOIN jobs j ON j.id = a.job_id
 WHERE a.status = 'active'
@@ -83,7 +85,7 @@ FOR UPDATE OF a, j`)
 	assignments := make([]timedOutAssignment, 0)
 	for assignmentRows.Next() {
 		var item timedOutAssignment
-		if err := assignmentRows.Scan(&item.assignmentID, &item.jobID, &item.responderOwnerType, &item.responderOwnerID); err != nil {
+		if err := assignmentRows.Scan(&item.assignmentID, &item.jobID, &item.dispatcherOwnerType, &item.dispatcherOwnerID, &item.responderOwnerType, &item.responderOwnerID); err != nil {
 			return 0, err
 		}
 		assignments = append(assignments, item)
@@ -105,6 +107,9 @@ WHERE id = $1
 			return 0, err
 		}
 		if err := s.slashResponderStakeTx(ctx, tx, item.jobID, domain.OwnerType(item.responderOwnerType), item.responderOwnerID, "responder_stake_slashed_timeout"); err != nil {
+			return 0, err
+		}
+		if err := s.refundDispatcherStakeTx(ctx, tx, item.jobID, domain.OwnerType(item.dispatcherOwnerType), item.dispatcherOwnerID); err != nil {
 			return 0, err
 		}
 		affected++
@@ -210,6 +215,13 @@ FOR UPDATE OF j`)
 		if err := s.refundResponderStakeTx(ctx, tx, item.jobID, domain.OwnerType(item.responderOwnerType), item.responderOwnerID); err != nil {
 			return 0, err
 		}
+		var dispatcherOwnerType, dispatcherOwnerID string
+		_ = tx.QueryRow(ctx, `SELECT dispatcher_owner_type, dispatcher_owner_id FROM assignments WHERE job_id = $1 ORDER BY assigned_at DESC LIMIT 1`, item.jobID).Scan(&dispatcherOwnerType, &dispatcherOwnerID)
+		if dispatcherOwnerType != "" && dispatcherOwnerID != "" {
+			if err := s.refundDispatcherStakeTx(ctx, tx, item.jobID, domain.OwnerType(dispatcherOwnerType), dispatcherOwnerID); err != nil {
+				return 0, err
+			}
+		}
 		if s.Cfg.AutoReviewResponderReward > 0 {
 			if err := s.adjustWalletTx(ctx, tx, domain.OwnerType(item.responderOwnerType), item.responderOwnerID, s.Cfg.AutoReviewResponderReward); err != nil {
 				return 0, err
@@ -303,5 +315,40 @@ func (s *Service) slashResponderStakeTx(ctx context.Context, tx pgx.Tx, jobID st
 		return err
 	}
 	_, err := tx.Exec(ctx, `UPDATE jobs SET responder_stake_status = 'slashed' WHERE id = $1`, jobID)
+	return err
+}
+
+func (s *Service) refundDispatcherStakeTx(ctx context.Context, tx pgx.Tx, jobID string, ownerType domain.OwnerType, ownerID string) error {
+	var amount float64
+	var status string
+	if err := tx.QueryRow(ctx, `SELECT dispatcher_stake_amount, dispatcher_stake_status FROM jobs WHERE id = $1`, jobID).Scan(&amount, &status); err != nil {
+		return err
+	}
+	if status != "held" || amount <= 0 {
+		return nil
+	}
+	if err := s.adjustWalletTx(ctx, tx, ownerType, ownerID, amount); err != nil {
+		return err
+	}
+	if err := s.ledgerTx(ctx, tx, ownerType, ownerID, amount, "dispatcher_stake_refund", &jobID, nil); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `UPDATE jobs SET dispatcher_stake_status = 'returned' WHERE id = $1`, jobID)
+	return err
+}
+
+func (s *Service) slashDispatcherStakeTx(ctx context.Context, tx pgx.Tx, jobID string, ownerType domain.OwnerType, ownerID string, reason string) error {
+	var amount float64
+	var status string
+	if err := tx.QueryRow(ctx, `SELECT dispatcher_stake_amount, dispatcher_stake_status FROM jobs WHERE id = $1`, jobID).Scan(&amount, &status); err != nil {
+		return err
+	}
+	if status != "held" || amount <= 0 {
+		return nil
+	}
+	if err := s.ledgerTx(ctx, tx, ownerType, ownerID, 0, reason, &jobID, nil); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `UPDATE jobs SET dispatcher_stake_status = 'slashed' WHERE id = $1`, jobID)
 	return err
 }

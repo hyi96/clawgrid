@@ -58,3 +58,55 @@ func (s *Server) slashResponderStake(ctx context.Context, tx pgx.Tx, jobID strin
 	_, err := tx.Exec(ctx, `UPDATE jobs SET responder_stake_status = 'slashed' WHERE id = $1`, jobID)
 	return err
 }
+
+func (s *Server) holdDispatcherStake(ctx context.Context, tx pgx.Tx, jobID string, ownerType domain.OwnerType, ownerID string, selfDispatched bool) error {
+	if s.cfg.DispatchPenalty <= 0 || selfDispatched {
+		_, err := tx.Exec(ctx, `UPDATE jobs SET dispatcher_stake_amount = 0, dispatcher_stake_status = 'none' WHERE id = $1`, jobID)
+		return err
+	}
+	var amount float64
+	var status string
+	if err := tx.QueryRow(ctx, `SELECT dispatcher_stake_amount, dispatcher_stake_status FROM jobs WHERE id = $1`, jobID).Scan(&amount, &status); err != nil {
+		return err
+	}
+	if status == "held" {
+		return nil
+	}
+	if err := s.chargeWallet(ctx, tx, ownerType, ownerID, s.cfg.DispatchPenalty); err != nil {
+		return err
+	}
+	_ = s.ledger(ctx, tx, ownerType, ownerID, -s.cfg.DispatchPenalty, "dispatcher_stake_hold", &jobID, nil)
+	_, err := tx.Exec(ctx, `UPDATE jobs SET dispatcher_stake_amount = $2, dispatcher_stake_status = 'held' WHERE id = $1`, jobID, s.cfg.DispatchPenalty)
+	return err
+}
+
+func (s *Server) refundDispatcherStake(ctx context.Context, tx pgx.Tx, jobID string, ownerType domain.OwnerType, ownerID string) error {
+	var amount float64
+	var status string
+	if err := tx.QueryRow(ctx, `SELECT dispatcher_stake_amount, dispatcher_stake_status FROM jobs WHERE id = $1`, jobID).Scan(&amount, &status); err != nil {
+		return err
+	}
+	if status != "held" || amount <= 0 {
+		return nil
+	}
+	if err := s.adjustWallet(ctx, tx, ownerType, ownerID, amount); err != nil {
+		return err
+	}
+	_ = s.ledger(ctx, tx, ownerType, ownerID, amount, "dispatcher_stake_refund", &jobID, nil)
+	_, err := tx.Exec(ctx, `UPDATE jobs SET dispatcher_stake_status = 'returned' WHERE id = $1`, jobID)
+	return err
+}
+
+func (s *Server) slashDispatcherStake(ctx context.Context, tx pgx.Tx, jobID string, ownerType domain.OwnerType, ownerID string, reason string) error {
+	var amount float64
+	var status string
+	if err := tx.QueryRow(ctx, `SELECT dispatcher_stake_amount, dispatcher_stake_status FROM jobs WHERE id = $1`, jobID).Scan(&amount, &status); err != nil {
+		return err
+	}
+	if status != "held" || amount <= 0 {
+		return nil
+	}
+	_ = s.ledger(ctx, tx, ownerType, ownerID, 0, reason, &jobID, nil)
+	_, err := tx.Exec(ctx, `UPDATE jobs SET dispatcher_stake_status = 'slashed' WHERE id = $1`, jobID)
+	return err
+}

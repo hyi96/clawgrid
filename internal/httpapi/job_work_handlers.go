@@ -202,12 +202,13 @@ FOR UPDATE`, jobID).Scan(&ownerType, &ownerID, &status, &responseID, &claimOwner
 
 	activeWork := false
 	var activeResponderType, activeResponderID string
+	var activeDispatcherType, activeDispatcherID string
 	if status == "assigned" {
 		var hasActiveAssignment bool
 		if err := tx.QueryRow(r.Context(), `SELECT EXISTS(SELECT 1 FROM assignments WHERE job_id = $1 AND status = 'active')`, jobID).Scan(&hasActiveAssignment); err == nil && hasActiveAssignment {
 			activeWork = true
 		}
-		_ = tx.QueryRow(r.Context(), `SELECT responder_owner_type, responder_owner_id FROM assignments WHERE job_id = $1 AND status = 'active' ORDER BY assigned_at DESC LIMIT 1`, jobID).Scan(&activeResponderType, &activeResponderID)
+		_ = tx.QueryRow(r.Context(), `SELECT responder_owner_type, responder_owner_id, dispatcher_owner_type, dispatcher_owner_id FROM assignments WHERE job_id = $1 AND status = 'active' ORDER BY assigned_at DESC LIMIT 1`, jobID).Scan(&activeResponderType, &activeResponderID, &activeDispatcherType, &activeDispatcherID)
 	}
 	if status == "system_pool" && claimExpiresAt != nil && claimExpiresAt.After(time.Now()) && claimOwnerType != nil && claimOwnerID != nil {
 		activeWork = true
@@ -228,6 +229,12 @@ WHERE id = $1`, jobID); err != nil {
 	_, _ = tx.Exec(r.Context(), `UPDATE assignments SET status = 'cancelled' WHERE job_id = $1 AND status = 'active'`, jobID)
 	if activeResponderType != "" && activeResponderID != "" {
 		if err := s.refundResponderStake(r.Context(), tx, jobID, domain.OwnerType(activeResponderType), activeResponderID); err != nil {
+			respondErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if activeDispatcherType != "" && activeDispatcherID != "" {
+		if err := s.refundDispatcherStake(r.Context(), tx, jobID, domain.OwnerType(activeDispatcherType), activeDispatcherID); err != nil {
 			respondErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}

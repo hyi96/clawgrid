@@ -41,6 +41,8 @@ type jobSeed struct {
 	claimExpiresAt          *time.Time
 	responderStakeAmount    float64
 	responderStakeStatus    string
+	dispatcherStakeAmount   float64
+	dispatcherStakeStatus   string
 }
 
 func TestServiceProcessRoutingExpiry(t *testing.T) {
@@ -158,32 +160,37 @@ func TestServiceProcessAssignmentTimeouts(t *testing.T) {
 	prompterID := h.insertAccount(t, "tom")
 	dispatcherID := h.insertAccount(t, "dora")
 	responderID := h.insertAccount(t, "noah")
+	h.insertWallet(t, "account", dispatcherID, 0.2, nil)
 	h.insertWallet(t, "account", responderID, 10.0, nil)
 	sessionID := h.insertSession(t, "account", prompterID)
 	requestID := h.insertMessage(t, sessionID, "account", prompterID, "text", "hello")
 	now := time.Now()
 
 	timeoutJobID := h.insertJob(t, jobSeed{
-		sessionID:            sessionID,
-		requestMessageID:     requestID,
-		ownerType:            "account",
-		ownerID:              prompterID,
-		status:               "assigned",
-		routingEndsAt:        now.Add(1 * time.Hour),
-		responderStakeAmount: h.cfg.ResponderStake,
-		responderStakeStatus: "held",
+		sessionID:             sessionID,
+		requestMessageID:      requestID,
+		ownerType:             "account",
+		ownerID:               prompterID,
+		status:                "assigned",
+		routingEndsAt:         now.Add(1 * time.Hour),
+		responderStakeAmount:  h.cfg.ResponderStake,
+		responderStakeStatus:  "held",
+		dispatcherStakeAmount: h.cfg.DispatchPenalty,
+		dispatcherStakeStatus: "held",
 	})
 	timeoutAssignmentID := h.insertAssignment(t, timeoutJobID, dispatcherID, responderID, now.Add(-1*time.Second), "active")
 
 	freshJobID := h.insertJob(t, jobSeed{
-		sessionID:            sessionID,
-		requestMessageID:     requestID,
-		ownerType:            "account",
-		ownerID:              prompterID,
-		status:               "assigned",
-		routingEndsAt:        now.Add(1 * time.Hour),
-		responderStakeAmount: h.cfg.ResponderStake,
-		responderStakeStatus: "held",
+		sessionID:             sessionID,
+		requestMessageID:      requestID,
+		ownerType:             "account",
+		ownerID:               prompterID,
+		status:                "assigned",
+		routingEndsAt:         now.Add(1 * time.Hour),
+		responderStakeAmount:  h.cfg.ResponderStake,
+		responderStakeStatus:  "held",
+		dispatcherStakeAmount: h.cfg.DispatchPenalty,
+		dispatcherStakeStatus: "held",
 	})
 	freshAssignmentID := h.insertAssignment(t, freshJobID, dispatcherID, responderID, now.Add(10*time.Minute), "active")
 
@@ -225,14 +232,23 @@ func TestServiceProcessAssignmentTimeouts(t *testing.T) {
 	if got := h.jobStakeStatus(t, freshJobID); got != "held" {
 		t.Fatalf("fresh job stake status = %q, want %q", got, "held")
 	}
+	if got := h.jobDispatcherStakeStatus(t, freshJobID); got != "held" {
+		t.Fatalf("fresh job dispatcher stake status = %q, want %q", got, "held")
+	}
 	if got := h.jobStakeStatus(t, timeoutJobID); got != "slashed" {
 		t.Fatalf("timed out assignment stake status = %q, want %q", got, "slashed")
+	}
+	if got := h.jobDispatcherStakeStatus(t, timeoutJobID); got != "returned" {
+		t.Fatalf("timed out assignment dispatcher stake status = %q, want %q", got, "returned")
 	}
 	if got := h.jobStakeStatus(t, claimTimeoutJobID); got != "slashed" {
 		t.Fatalf("timed out claim stake status = %q, want %q", got, "slashed")
 	}
 	if got := h.walletBalance(t, "account", responderID); got != 8.2 {
 		t.Fatalf("responder balance = %v, want %v", got, 8.2)
+	}
+	if got := h.walletBalance(t, "account", dispatcherID); got != 0.2 {
+		t.Fatalf("dispatcher balance = %v, want %v", got, 0.2)
 	}
 }
 
@@ -241,8 +257,10 @@ func TestServiceProcessAutoReviewPenalizesPrompterAndRewardsResponder(t *testing
 
 	h := newServiceHarness(t, nil)
 	ownerID := h.insertAccount(t, "tom")
+	dispatcherID := h.insertAccount(t, "dora")
 	responderID := h.insertAccount(t, "noah")
 	h.insertWallet(t, "account", ownerID, 1.0, nil)
+	h.insertWallet(t, "account", dispatcherID, 0.2, nil)
 	h.insertWallet(t, "account", responderID, 5.0, nil)
 	sessionID := h.insertSession(t, "account", ownerID)
 	requestID := h.insertMessage(t, sessionID, "account", ownerID, "text", "hello")
@@ -250,19 +268,23 @@ func TestServiceProcessAutoReviewPenalizesPrompterAndRewardsResponder(t *testing
 	now := time.Now()
 
 	dueJobID := h.insertJob(t, jobSeed{
-		sessionID:            sessionID,
-		requestMessageID:     requestID,
-		ownerType:            "account",
-		ownerID:              ownerID,
-		status:               "assigned",
-		routingEndsAt:        now.Add(1 * time.Hour),
-		responseMessageID:    &replyID,
-		reviewDeadlineAt:     ptrTime(now.Add(-1 * time.Second)),
-		responderStakeAmount: h.cfg.ResponderStake,
-		responderStakeStatus: "held",
+		sessionID:             sessionID,
+		requestMessageID:      requestID,
+		ownerType:             "account",
+		ownerID:               ownerID,
+		status:                "assigned",
+		routingEndsAt:         now.Add(1 * time.Hour),
+		responseMessageID:     &replyID,
+		reviewDeadlineAt:      ptrTime(now.Add(-1 * time.Second)),
+		responderStakeAmount:  h.cfg.ResponderStake,
+		responderStakeStatus:  "held",
+		dispatcherStakeAmount: h.cfg.DispatchPenalty,
+		dispatcherStakeStatus: "held",
 	})
 	h.execSQL(t, `UPDATE jobs SET tip_amount = 0.6 WHERE id = $1`, dueJobID)
 	h.execSQL(t, `UPDATE wallets SET balance = balance - $1 WHERE owner_type = 'account' AND owner_id = $2`, h.cfg.ResponderStake, responderID)
+	h.insertAssignment(t, dueJobID, dispatcherID, responderID, now.Add(-2*time.Minute), "success")
+	h.execSQL(t, `UPDATE wallets SET balance = balance - $1 WHERE owner_type = 'account' AND owner_id = $2`, h.cfg.DispatchPenalty, dispatcherID)
 	futureJobID := h.insertJob(t, jobSeed{
 		sessionID:         sessionID,
 		requestMessageID:  requestID,
@@ -293,11 +315,17 @@ func TestServiceProcessAutoReviewPenalizesPrompterAndRewardsResponder(t *testing
 	if got := h.jobStakeStatus(t, dueJobID); got != "returned" {
 		t.Fatalf("due job stake status = %q, want %q", got, "returned")
 	}
+	if got := h.jobDispatcherStakeStatus(t, dueJobID); got != "returned" {
+		t.Fatalf("due job dispatcher stake status = %q, want %q", got, "returned")
+	}
 	if got := h.walletBalance(t, "account", responderID); got != 5.4 {
 		t.Fatalf("responder balance = %v, want %v", got, 5.4)
 	}
 	if got := h.walletBalance(t, "account", ownerID); got != 0.4 {
 		t.Fatalf("prompter balance = %v, want %v", got, 0.4)
+	}
+	if got := h.walletBalance(t, "account", dispatcherID); got != 0.2 {
+		t.Fatalf("dispatcher balance = %v, want %v", got, 0.2)
 	}
 	if got := h.jobStatus(t, futureJobID); got != "assigned" {
 		t.Fatalf("future job status = %q, want %q", got, "assigned")
@@ -483,14 +511,16 @@ INSERT INTO jobs(
   prompter_vote, review_deadline_at, routing_cycle_count,
   last_routing_entered_at, last_system_pool_entered_at,
   claim_owner_type, claim_owner_id, claim_expires_at,
-  responder_stake_amount, responder_stake_status
+  responder_stake_amount, responder_stake_status,
+  dispatcher_stake_amount, dispatcher_stake_status
 ) VALUES (
   $1, $2, $3, $4, $5, $6,
   now(), $7, $8,
   $9, $10, $11,
   $12, $13,
   $14, $15, $16,
-  $17, $18
+  $17, $18,
+  $19, $20
 )`,
 		id,
 		seed.sessionID,
@@ -510,6 +540,8 @@ INSERT INTO jobs(
 		seed.claimExpiresAt,
 		seed.responderStakeAmount,
 		seed.responderStakeStatus,
+		seed.dispatcherStakeAmount,
+		seed.dispatcherStakeStatus,
 	)
 	return id
 }
@@ -575,6 +607,15 @@ func (h *serviceHarness) jobStakeStatus(t *testing.T, jobID string) string {
 	var status string
 	if err := h.appPool.QueryRow(context.Background(), `SELECT responder_stake_status FROM jobs WHERE id = $1`, jobID).Scan(&status); err != nil {
 		t.Fatalf("jobStakeStatus: %v", err)
+	}
+	return status
+}
+
+func (h *serviceHarness) jobDispatcherStakeStatus(t *testing.T, jobID string) string {
+	t.Helper()
+	var status string
+	if err := h.appPool.QueryRow(context.Background(), `SELECT dispatcher_stake_status FROM jobs WHERE id = $1`, jobID).Scan(&status); err != nil {
+		t.Fatalf("jobDispatcherStakeStatus: %v", err)
 	}
 	return status
 }

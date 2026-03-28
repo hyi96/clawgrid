@@ -613,6 +613,40 @@ func TestAssignmentRequiresLiveResponderAvailability(t *testing.T) {
 	}, http.StatusConflict, nil)
 }
 
+func TestAssignmentRequiresDispatcherBalanceForPenaltyHold(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	dispatcher := h.registerAccount(t, "dispatch")
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "assign this directly")
+
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
+	h.execSQL(t, `UPDATE wallets SET balance = 0.1 WHERE owner_type = 'account' AND owner_id = $1`, dispatcher.accountID)
+
+	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
+		"job_id":             jobID,
+		"responder_owner_id": responder.accountID,
+	}, http.StatusPaymentRequired, nil)
+
+	if got := h.walletBalance(t, dispatcher.apiKey); math.Abs(got-0.1) > 1e-9 {
+		t.Fatalf("dispatcher balance = %v, want %v", got, 0.1)
+	}
+	if got := h.walletBalance(t, responder.apiKey); math.Abs(got-100.0) > 1e-9 {
+		t.Fatalf("responder balance = %v, want %v", got, 100.0)
+	}
+	var job struct {
+		Status string `json:"status"`
+	}
+	h.requestJSON(t, http.MethodGet, "/jobs/"+jobID, prompter.apiKey, nil, http.StatusOK, &job)
+	if job.Status != "routing" {
+		t.Fatalf("job status = %q, want %q", job.Status, "routing")
+	}
+}
+
 func TestCancellingResponderAvailabilityPreventsLaterAssignment(t *testing.T) {
 	t.Parallel()
 
@@ -1958,6 +1992,52 @@ func TestDirectAssignmentResponderWorkReturnsAssignedJob(t *testing.T) {
 	h.requestJSON(t, http.MethodGet, "/assignments/"+assignment.ID, dispatcher.apiKey, nil, http.StatusOK, &assignmentState)
 	if assignmentState.Status != "active" {
 		t.Fatalf("assignment status = %q, want %q", assignmentState.Status, "active")
+	}
+}
+
+func TestDirectAssignmentBadVoteConsumesHeldDispatcherStakeWithoutGoingNegative(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	prompter := h.registerAccount(t, "tom")
+	dispatcher := h.registerAccount(t, "dora")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "assign this badly")
+
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
+	h.execSQL(t, `UPDATE wallets SET balance = 0.2 WHERE owner_type = 'account' AND owner_id = $1`, dispatcher.accountID)
+
+	var assignment struct {
+		ID string `json:"id"`
+	}
+	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
+		"job_id":             jobID,
+		"responder_owner_id": responder.accountID,
+	}, http.StatusCreated, &assignment)
+
+	if got := h.walletBalance(t, dispatcher.apiKey); math.Abs(got-0.0) > 1e-9 {
+		t.Fatalf("dispatcher balance after assignment = %v, want %v", got, 0.0)
+	}
+
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/reply", responder.apiKey, map[string]any{
+		"content": "bad reply",
+	}, http.StatusOK, nil)
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/vote", prompter.apiKey, map[string]any{
+		"vote": "down",
+	}, http.StatusOK, nil)
+
+	if got := h.walletBalance(t, dispatcher.apiKey); math.Abs(got-0.0) > 1e-9 {
+		t.Fatalf("dispatcher balance after bad vote = %v, want %v", got, 0.0)
+	}
+
+	var dispatcherStakeStatus string
+	if err := h.appPool.QueryRow(context.Background(), `SELECT dispatcher_stake_status FROM jobs WHERE id = $1`, jobID).Scan(&dispatcherStakeStatus); err != nil {
+		t.Fatalf("load dispatcher_stake_status: %v", err)
+	}
+	if dispatcherStakeStatus != "slashed" {
+		t.Fatalf("dispatcher_stake_status = %q, want %q", dispatcherStakeStatus, "slashed")
 	}
 }
 

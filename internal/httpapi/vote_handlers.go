@@ -63,6 +63,7 @@ func (s *Server) handleJobVote(w http.ResponseWriter, r *http.Request, actor dom
 			_ = s.ledger(r.Context(), tx, domain.OwnerType(responderType), responderID, s.cfg.ResponderPool+tip, "responder_reward", &jobID, nil)
 		}
 		if dispatcherID != "" {
+			_ = s.refundDispatcherStake(r.Context(), tx, jobID, domain.OwnerType(dispatcherType), dispatcherID)
 			_ = s.adjustWallet(r.Context(), tx, domain.OwnerType(dispatcherType), dispatcherID, s.cfg.DispatcherPool)
 			_ = s.ledger(r.Context(), tx, domain.OwnerType(dispatcherType), dispatcherID, s.cfg.DispatcherPool, "dispatcher_reward", &jobID, &asnID)
 		}
@@ -81,8 +82,7 @@ func (s *Server) handleJobVote(w http.ResponseWriter, r *http.Request, actor dom
 		if dispatcherID != "" {
 			isSelfDispatched := dispatcherType == ownerType && dispatcherID == ownerID
 			if !isSelfDispatched {
-				_ = s.adjustWallet(r.Context(), tx, domain.OwnerType(dispatcherType), dispatcherID, -s.cfg.DispatchPenalty)
-				_ = s.ledger(r.Context(), tx, domain.OwnerType(dispatcherType), dispatcherID, -s.cfg.DispatchPenalty, "dispatcher_penalty", &jobID, &asnID)
+				_ = s.slashDispatcherStake(r.Context(), tx, jobID, domain.OwnerType(dispatcherType), dispatcherID, "dispatcher_penalty")
 			}
 			_, _ = tx.Exec(r.Context(), `UPDATE assignments SET status = 'fail' WHERE id = $1`, asnID)
 		}

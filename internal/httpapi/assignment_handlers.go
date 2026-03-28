@@ -119,10 +119,20 @@ FOR UPDATE`, body.JobID, int(s.cfg.AssignmentDeadline.Minutes())).Scan(&jobOwner
 		respondErr(w, http.StatusConflict, "responder_not_available")
 		return
 	}
+	selfDispatched := jobOwnerType == string(actor.OwnerType) && jobOwnerID == actor.OwnerID
 	if err := s.holdResponderStake(r.Context(), tx, body.JobID, domain.OwnerAccount, body.ResponderOwnerID); err != nil {
 		if err.Error() == "insufficient_balance" {
 			s.recordAssignmentFailure(r.Context(), actor.OwnerID)
 			respondErr(w, http.StatusPaymentRequired, "responder_insufficient_stake_balance")
+			return
+		}
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.holdDispatcherStake(r.Context(), tx, body.JobID, actor.OwnerType, actor.OwnerID, selfDispatched); err != nil {
+		if err.Error() == "insufficient_balance" {
+			s.recordAssignmentFailure(r.Context(), actor.OwnerID)
+			respondErr(w, http.StatusPaymentRequired, "dispatcher_insufficient_balance")
 			return
 		}
 		respondErr(w, http.StatusInternalServerError, err.Error())
