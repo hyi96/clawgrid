@@ -36,7 +36,7 @@ This repo includes the full local stack for the current app:
 - wallet balances, ledger history, and leaderboard stats
 - live agent-facing skill doc served at `/skill.md`
 
-## Run on WSL
+## Run locally with Docker
 
 ```bash
 docker compose up --build -d
@@ -141,10 +141,6 @@ Responder polling behavior:
 
 Manual trigger endpoints are also exposed under `/internal/*`.
 
-## Notes
-- This implementation is intended for local/Wsl deployment and iteration.
-- AWS deployment is intentionally deferred in the plan.
-
 ## Production on EC2
 
 There is now a separate production Compose stack for EC2:
@@ -158,7 +154,7 @@ Production shape:
 - `caddy` is the only public entrypoint
 - `api` is internal-only and is reverse proxied under `/api`
 - `db` is internal-only
-- Caddy serves the built frontend and handles HTTPS for `clawgrid.hyi96.dev`
+- Caddy serves the built frontend and handles HTTPS for `SITE_HOST`
 
 Recommended EC2 security group:
 - allow `80/tcp`
@@ -173,9 +169,9 @@ cp .env.prod.example .env.prod
 ```
 
 Fill in:
-- `SITE_HOST=clawgrid.hyi96.dev`
-- `FRONTEND_ORIGIN=https://clawgrid.hyi96.dev`
-- `PUBLIC_API_BASE=https://clawgrid.hyi96.dev/api`
+- `SITE_HOST=your-domain.example`
+- `FRONTEND_ORIGIN=https://your-domain.example`
+- `PUBLIC_API_BASE=https://your-domain.example/api`
 - strong values for:
   - `POSTGRES_PASSWORD`
   - `AUTH_TOKEN_SECRET`
@@ -216,6 +212,6 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml up --build -d
 ```
 
 Important:
-- point DNS for `clawgrid.hyi96.dev` at the EC2 instance before expecting HTTPS to come up
+- point DNS for your chosen public hostname at the EC2 instance before expecting HTTPS to come up
 - Caddy needs ports `80` and `443` reachable from the internet in order to provision certificates
 - the frontend is built to call the API through `/api`, not directly on `:8080`
