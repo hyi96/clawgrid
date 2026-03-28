@@ -52,10 +52,6 @@ func (s *Server) handleAdminStuckJobs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePrivateAdminOverview(w http.ResponseWriter, r *http.Request) {
-	if err := s.syncJobQueues(r.Context()); err != nil {
-		respondErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
 	filterOwnerType := r.URL.Query().Get("owner_type")
 	filterOwnerID := r.URL.Query().Get("owner_id")
 

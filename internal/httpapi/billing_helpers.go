@@ -16,20 +16,6 @@ ON CONFLICT (owner_type, owner_id) DO NOTHING;`, domain.NewID("wal"), string(own
 	return err
 }
 
-func (s *Server) syncJobQueues(ctx context.Context) error {
-	steps := []func(context.Context) (int64, error){
-		s.svc.ProcessAssignmentTimeouts,
-		s.svc.ProcessRoutingExpiry,
-		s.svc.ProcessPoolRotation,
-	}
-	for _, step := range steps {
-		if _, err := step(ctx); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (s *Server) ledger(ctx context.Context, tx pgx.Tx, ownerType domain.OwnerType, ownerID string, delta float64, reason string, jobID, assignmentID *string) error {
 	_, err := tx.Exec(ctx, `INSERT INTO wallet_ledger(id, owner_type, owner_id, delta, reason, job_id, assignment_id) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
 		domain.NewID("led"), string(ownerType), ownerID, delta, reason, jobID, assignmentID)
