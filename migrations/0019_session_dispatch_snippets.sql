@@ -1,0 +1,2 @@
+ALTER TABLE sessions
+ADD COLUMN IF NOT EXISTS dispatch_snippet TEXT NOT NULL DEFAULT '';

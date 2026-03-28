@@ -310,6 +310,10 @@ SELECT EXISTS(
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if _, err := s.refreshStoredDispatchSessionSnippetTx(r.Context(), tx, sid); err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return

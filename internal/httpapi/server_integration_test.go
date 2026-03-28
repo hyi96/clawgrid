@@ -1503,6 +1503,78 @@ VALUES ($1, 'account', $2, now(), now())`,
 	}
 }
 
+func TestSessionDispatchSnippetStoredOnMessageAndReply(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.PollAssignmentWait = 30 * time.Second
+	})
+
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "first prompt")
+
+	var snippetAfterPrompt string
+	if err := h.appPool.QueryRow(context.Background(), `SELECT dispatch_snippet FROM sessions WHERE id = $1`, sessionID).Scan(&snippetAfterPrompt); err != nil {
+		t.Fatalf("load prompt snippet: %v", err)
+	}
+	if !strings.Contains(snippetAfterPrompt, "prompter: first prompt") {
+		t.Fatalf("dispatch_snippet after prompt = %q", snippetAfterPrompt)
+	}
+
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
+	h.requestJSON(t, http.MethodPost, "/assignments", prompter.apiKey, map[string]any{
+		"job_id":             jobID,
+		"responder_owner_id": responder.accountID,
+	}, http.StatusOK, nil)
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/reply", responder.apiKey, map[string]any{
+		"content": "first reply",
+	}, http.StatusOK, nil)
+
+	var snippetAfterReply string
+	if err := h.appPool.QueryRow(context.Background(), `SELECT dispatch_snippet FROM sessions WHERE id = $1`, sessionID).Scan(&snippetAfterReply); err != nil {
+		t.Fatalf("load reply snippet: %v", err)
+	}
+	if !strings.Contains(snippetAfterReply, "prompter: first prompt") || !strings.Contains(snippetAfterReply, "responder: first reply") {
+		t.Fatalf("dispatch_snippet after reply = %q", snippetAfterReply)
+	}
+}
+
+func TestRoutingJobsLazyBackfillsStoredSessionSnippet(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	prompter := h.registerAccount(t, "tom")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "lazy backfill prompt")
+
+	h.execSQL(t, `UPDATE sessions SET dispatch_snippet = '' WHERE id = $1`, sessionID)
+
+	var routing struct {
+		Items []struct {
+			ID             string `json:"id"`
+			SessionSnippet string `json:"session_snippet"`
+		} `json:"items"`
+	}
+	h.requestJSON(t, http.MethodGet, "/routing/jobs", "", nil, http.StatusOK, &routing)
+	if len(routing.Items) != 1 || routing.Items[0].ID != jobID {
+		t.Fatalf("unexpected routing payload: %+v", routing)
+	}
+	if !strings.Contains(routing.Items[0].SessionSnippet, "prompter: lazy backfill prompt") {
+		t.Fatalf("routing session_snippet = %q", routing.Items[0].SessionSnippet)
+	}
+
+	var stored string
+	if err := h.appPool.QueryRow(context.Background(), `SELECT dispatch_snippet FROM sessions WHERE id = $1`, sessionID).Scan(&stored); err != nil {
+		t.Fatalf("load stored snippet: %v", err)
+	}
+	if stored != routing.Items[0].SessionSnippet {
+		t.Fatalf("stored dispatch_snippet = %q, want %q", stored, routing.Items[0].SessionSnippet)
+	}
+}
+
 func TestWalletLedgerPagination(t *testing.T) {
 	t.Parallel()
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type dispatchSnippetMessage struct {
@@ -350,8 +352,10 @@ func reverseStrings(values []string) {
 	}
 }
 
-func (s *Server) buildDispatchSessionSnippet(ctx context.Context, sessionID string) (string, error) {
-	rows, err := s.db.Query(ctx, `
+func buildDispatchSessionSnippetWithQuery(ctx context.Context, query interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, sessionID string) (string, error) {
+	rows, err := query.Query(ctx, `
 SELECT type, role, content
 FROM messages
 WHERE session_id = $1
@@ -386,4 +390,51 @@ ORDER BY created_at DESC`, sessionID)
 		usedRunes += utf8.RuneCountInString(content)
 	}
 	return buildSessionSnippetFromNewestFirstWithSourceTrimmed(messages, sourceTrimmed), nil
+}
+
+func (s *Server) buildDispatchSessionSnippet(ctx context.Context, sessionID string) (string, error) {
+	return buildDispatchSessionSnippetWithQuery(ctx, s.db, sessionID)
+}
+
+func (s *Server) refreshStoredDispatchSessionSnippetTx(ctx context.Context, tx pgx.Tx, sessionID string) (string, error) {
+	snippet, err := buildDispatchSessionSnippetWithQuery(ctx, tx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE sessions SET dispatch_snippet = $2 WHERE id = $1`, sessionID, snippet); err != nil {
+		return "", err
+	}
+	return snippet, nil
+}
+
+func (s *Server) ensureStoredDispatchSessionSnippet(ctx context.Context, sessionID, current string) (string, error) {
+	if strings.TrimSpace(current) != "" {
+		return current, nil
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
+
+	var stored string
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(dispatch_snippet, '') FROM sessions WHERE id = $1 FOR UPDATE`, sessionID).Scan(&stored); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(stored) != "" {
+		if err := tx.Commit(ctx); err != nil {
+			return "", err
+		}
+		return stored, nil
+	}
+
+	snippet, err := s.refreshStoredDispatchSessionSnippetTx(ctx, tx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return snippet, nil
 }

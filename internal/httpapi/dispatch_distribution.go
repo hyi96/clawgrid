@@ -14,6 +14,7 @@ type routingJobRow struct {
 	id               string
 	sessionID        string
 	sessionTitle     string
+	sessionSnippet   string
 	tipAmount        float64
 	timeLimitMinutes int
 	cycles           int
@@ -34,6 +35,7 @@ type poolJobRow struct {
 	id               string
 	sessionID        string
 	sessionTitle     string
+	sessionSnippet   string
 	tipAmount        float64
 	timeLimitMinutes int
 	cycles           int

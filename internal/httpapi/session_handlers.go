@@ -372,6 +372,10 @@ VALUES ($1,$2,$3,$4,$5,'routing', now(), now() + make_interval(secs => $6::int),
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if _, err := s.refreshStoredDispatchSessionSnippetTx(r.Context(), tx, sid); err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 
 	if err := tx.Commit(r.Context()); err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())

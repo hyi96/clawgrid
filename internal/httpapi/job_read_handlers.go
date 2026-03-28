@@ -126,7 +126,7 @@ func (s *Server) serveRoutingJobs(w http.ResponseWriter, r *http.Request, actor 
 	}
 	bandSize := dispatchBandSize(activeDispatchers, maxDispatchRoutingJobs, dispatchJobsBandBase)
 	rows, err := s.db.Query(r.Context(), `
-SELECT j.id, j.session_id, j.routing_cycle_count, j.last_routing_entered_at, j.routing_ends_at, COALESCE(sess.title, ''), j.tip_amount, COALESCE(NULLIF(j.metadata_json->>'time_limit_minutes', '')::int, 0)
+SELECT j.id, j.session_id, j.routing_cycle_count, j.last_routing_entered_at, j.routing_ends_at, COALESCE(sess.title, ''), COALESCE(sess.dispatch_snippet, ''), j.tip_amount, COALESCE(NULLIF(j.metadata_json->>'time_limit_minutes', '')::int, 0)
 FROM jobs j
 JOIN sessions sess ON sess.id = j.session_id
 WHERE j.status = 'routing'
@@ -141,7 +141,7 @@ LIMIT $1`, bandSize)
 	candidates := []routingJobRow{}
 	for rows.Next() {
 		var row routingJobRow
-		_ = rows.Scan(&row.id, &row.sessionID, &row.cycles, &row.enteredAt, &row.endsAt, &row.sessionTitle, &row.tipAmount, &row.timeLimitMinutes)
+		_ = rows.Scan(&row.id, &row.sessionID, &row.cycles, &row.enteredAt, &row.endsAt, &row.sessionTitle, &row.sessionSnippet, &row.tipAmount, &row.timeLimitMinutes)
 		candidates = append(candidates, row)
 	}
 	shuffleRoutingJobsForDispatcher(candidates, actor, time.Now())
@@ -151,7 +151,7 @@ LIMIT $1`, bandSize)
 
 	items := []map[string]any{}
 	for _, row := range candidates {
-		sessionSnippet, err := s.buildDispatchSessionSnippet(r.Context(), row.sessionID)
+		sessionSnippet, err := s.ensureStoredDispatchSessionSnippet(r.Context(), row.sessionID, row.sessionSnippet)
 		if err != nil {
 			respondErr(w, http.StatusInternalServerError, err.Error())
 			return

@@ -253,6 +253,7 @@ func (s *Server) handleResponderWork(w http.ResponseWriter, r *http.Request, act
 SELECT jobs.id,
        jobs.session_id,
        COALESCE(sess.title, ''),
+       COALESCE(sess.dispatch_snippet, ''),
        jobs.created_at,
        jobs.routing_cycle_count,
        jobs.last_system_pool_entered_at,
@@ -275,7 +276,7 @@ JOIN sessions sess ON sess.id = jobs.session_id
 	candidateRows := []poolJobRow{}
 	for rows.Next() {
 		var row poolJobRow
-		_ = rows.Scan(&row.id, &row.sessionID, &row.sessionTitle, &row.createdAt, &row.cycles, &row.enteredAt, &row.endsAt, &row.tipAmount, &row.timeLimitMinutes)
+		_ = rows.Scan(&row.id, &row.sessionID, &row.sessionTitle, &row.sessionSnippet, &row.createdAt, &row.cycles, &row.enteredAt, &row.endsAt, &row.tipAmount, &row.timeLimitMinutes)
 		candidateRows = append(candidateRows, row)
 	}
 	shufflePoolJobsForResponder(candidateRows, actor, time.Now())
@@ -285,7 +286,7 @@ JOIN sessions sess ON sess.id = jobs.session_id
 
 	candidates := []map[string]any{}
 	for _, row := range candidateRows {
-		sessionSnippet, err := s.buildDispatchSessionSnippet(ctx, row.sessionID)
+		sessionSnippet, err := s.ensureStoredDispatchSessionSnippet(ctx, row.sessionID, row.sessionSnippet)
 		if err != nil {
 			respondErr(w, http.StatusInternalServerError, err.Error())
 			return
