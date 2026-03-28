@@ -10,6 +10,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+const (
+	responderPollCheckInterval         = time.Second
+	responderAvailabilityHeartbeatWait = 5 * time.Second
+)
+
 func (s *Server) handleRespondersAvailable(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
 	s.serveRespondersAvailable(w, r, actor)
 }
@@ -92,10 +97,6 @@ LIMIT $5`, int(s.cfg.ResponderActiveWindow.Seconds()), string(actor.OwnerType), 
 
 func (s *Server) handleResponderState(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
 	ctx := r.Context()
-	if err := s.syncJobQueues(ctx); err != nil {
-		respondErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
 	if jobID, ok := s.findInProgressJob(ctx, actor); ok {
 		_ = s.clearResponderPoolSnapshot(context.Background(), actor)
 		respondJSON(w, http.StatusOK, map[string]any{"mode": "assigned", "job_id": jobID})
@@ -158,19 +159,38 @@ func (s *Server) handleResponderAvailability(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) handleResponderAvailabilityDelete(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
-	if err := s.clearAvailability(r.Context(), actor); err != nil {
+	tx, err := s.db.Begin(r.Context())
+	if err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	defer tx.Rollback(r.Context())
+	if err := lockResponderActorTx(r.Context(), tx, actor.OwnerType, actor.OwnerID); err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if jobID, ok := s.findInProgressJobTx(r.Context(), tx, actor); ok {
+		if err := tx.Commit(r.Context()); err != nil {
+			respondErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		respondJSON(w, http.StatusOK, map[string]any{"ok": false, "mode": "assigned", "job_id": jobID})
+		return
+	}
+	if err := s.clearAvailabilityTx(r.Context(), tx, actor); err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = s.clearResponderPoolSnapshot(r.Context(), actor)
 	respondJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) handleResponderWork(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
 	ctx := r.Context()
-	if err := s.syncJobQueues(ctx); err != nil {
-		respondErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
 	if jobID, ok := s.findInProgressJob(ctx, actor); ok {
 		_ = s.clearResponderPoolSnapshot(context.Background(), actor)
 		_ = s.clearAvailability(context.Background(), actor)
@@ -191,33 +211,34 @@ func (s *Server) handleResponderWork(w http.ResponseWriter, r *http.Request, act
 	}()
 
 	waitUntil := time.Now().Add(s.cfg.PollAssignmentWait)
+	lastHeartbeat := time.Now()
 	for time.Now().Before(waitUntil) {
 		if jobID, ok := s.findInProgressJob(ctx, actor); ok {
 			respondJSON(w, http.StatusOK, map[string]any{"mode": "assigned", "job_id": jobID})
 			return
 		}
-		if err := s.touchAvailability(ctx, actor); err != nil {
-			if ctx.Err() != nil {
+		if time.Since(lastHeartbeat) >= responderAvailabilityHeartbeatWait {
+			active, err := s.touchAvailability(ctx, actor)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				respondErr(w, http.StatusInternalServerError, err.Error())
 				return
 			}
-			respondErr(w, http.StatusInternalServerError, err.Error())
-			return
+			if !active {
+				return
+			}
+			lastHeartbeat = time.Now()
 		}
 		sleepFor := time.Until(waitUntil)
-		if sleepFor > 250*time.Millisecond {
-			sleepFor = 250 * time.Millisecond
+		if sleepFor > responderPollCheckInterval {
+			sleepFor = responderPollCheckInterval
 		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(sleepFor):
-		}
-		if err := s.syncJobQueues(ctx); err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			respondErr(w, http.StatusInternalServerError, err.Error())
-			return
 		}
 	}
 
@@ -288,8 +309,14 @@ JOIN sessions sess ON sess.id = jobs.session_id
 }
 
 func (s *Server) findInProgressJob(ctx context.Context, actor domain.Actor) (string, bool) {
+	return s.findInProgressJobTx(ctx, s.db, actor)
+}
+
+func (s *Server) findInProgressJobTx(ctx context.Context, query interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, actor domain.Actor) (string, bool) {
 	var jobID string
-	err := s.db.QueryRow(ctx, `
+	err := query.QueryRow(ctx, `
 SELECT job_id
 FROM (
   SELECT a.job_id, 1 AS priority_rank, a.assigned_at AS sort_ts
@@ -322,8 +349,16 @@ func (s *Server) beginPollingAvailability(ctx context.Context, actor domain.Acto
 	if err := s.clearResponderPoolSnapshot(ctx, actor); err != nil {
 		return false, err
 	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	if err := lockResponderActorTx(ctx, tx, actor.OwnerType, actor.OwnerID); err != nil {
+		return false, err
+	}
 	var marker int
-	err := s.db.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 INSERT INTO responder_availability(id, owner_type, owner_id, last_seen_at, poll_started_at)
 VALUES ($1,$2,$3, now(), now())
 ON CONFLICT (owner_type, owner_id)
@@ -346,20 +381,41 @@ RETURNING 1`,
 	if err != nil {
 		return false, err
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
 	return marker == 1, nil
 }
 
-func (s *Server) touchAvailability(ctx context.Context, actor domain.Actor) error {
-	_, err := s.db.Exec(ctx, `
+func (s *Server) touchAvailability(ctx context.Context, actor domain.Actor) (bool, error) {
+	res, err := s.db.Exec(ctx, `
 UPDATE responder_availability
 SET last_seen_at = now()
 WHERE owner_type = $1
   AND owner_id = $2`, string(actor.OwnerType), actor.OwnerID)
-	return err
+	if err != nil {
+		return false, err
+	}
+	return res.RowsAffected() > 0, nil
 }
 
 func (s *Server) clearAvailability(ctx context.Context, actor domain.Actor) error {
-	_, err := s.db.Exec(ctx, `DELETE FROM responder_availability WHERE owner_type = $1 AND owner_id = $2`, string(actor.OwnerType), actor.OwnerID)
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := lockResponderActorTx(ctx, tx, actor.OwnerType, actor.OwnerID); err != nil {
+		return err
+	}
+	if err := s.clearAvailabilityTx(ctx, tx, actor); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *Server) clearAvailabilityTx(ctx context.Context, tx pgx.Tx, actor domain.Actor) error {
+	_, err := tx.Exec(ctx, `DELETE FROM responder_availability WHERE owner_type = $1 AND owner_id = $2`, string(actor.OwnerType), actor.OwnerID)
 	return err
 }
 

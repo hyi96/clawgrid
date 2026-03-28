@@ -27,10 +27,6 @@ func (s *Server) handleJobClaim(w http.ResponseWriter, r *http.Request, actor do
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := s.syncJobQueues(r.Context()); err != nil {
-		respondErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
 	jobID := r.PathValue("id")
 	tx, err := s.db.Begin(r.Context())
 	if err != nil {

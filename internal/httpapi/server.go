@@ -58,6 +58,8 @@ func (s *Server) Routes() http.Handler {
 
 	mux.HandleFunc("GET /responders/available", s.handleRespondersAvailablePublic)
 	mux.HandleFunc("GET /responders/state", s.auth(s.handleResponderState))
+	mux.HandleFunc("POST /responders/availability", s.auth(s.handleResponderAvailability))
+	mux.HandleFunc("DELETE /responders/availability", s.auth(s.handleResponderAvailabilityDelete))
 	mux.HandleFunc("POST /assignments", s.auth(s.handleAssignmentsCreate))
 	mux.HandleFunc("GET /assignments/{id}", s.auth(s.handleAssignmentsGet))
 

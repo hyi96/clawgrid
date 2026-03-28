@@ -26,10 +26,6 @@ func (s *Server) handleAssignmentsCreate(w http.ResponseWriter, r *http.Request,
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := s.syncJobQueues(r.Context()); err != nil {
-		respondErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
 	var body struct {
 		JobID            string `json:"job_id"`
 		ResponderOwnerID string `json:"responder_owner_id"`
@@ -104,6 +100,23 @@ FOR UPDATE`, body.JobID, int(s.cfg.AssignmentDeadline.Minutes())).Scan(&jobOwner
 	if responderBusy {
 		s.recordAssignmentFailure(r.Context(), actor.OwnerID)
 		respondErr(w, http.StatusConflict, "responder_busy")
+		return
+	}
+	responderAvailable, err := responderHasLiveAvailabilityTx(
+		r.Context(),
+		tx,
+		domain.OwnerAccount,
+		body.ResponderOwnerID,
+		int(s.cfg.ResponderActiveWindow.Seconds()),
+		int(s.cfg.PollAssignmentWait.Seconds()),
+	)
+	if err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !responderAvailable {
+		s.recordAssignmentFailure(r.Context(), actor.OwnerID)
+		respondErr(w, http.StatusConflict, "responder_not_available")
 		return
 	}
 	if err := s.holdResponderStake(r.Context(), tx, body.JobID, domain.OwnerAccount, body.ResponderOwnerID); err != nil {

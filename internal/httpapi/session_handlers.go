@@ -61,10 +61,6 @@ LIMIT 1`,
 }
 
 func (s *Server) handleSessionState(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
-	if err := s.syncJobQueues(r.Context()); err != nil {
-		respondErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
 	sid := r.PathValue("id")
 	var ownerType, ownerID, title string
 	if err := s.db.QueryRow(r.Context(), `SELECT owner_type, owner_id, COALESCE(title, '') FROM sessions WHERE id = $1 AND deleted_at IS NULL`, sid).Scan(&ownerType, &ownerID, &title); err != nil {

@@ -15,10 +15,6 @@ func effectiveJobStatus(status, responseMessageID, vote string) string {
 }
 
 func (s *Server) handleJobGet(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
-	if err := s.syncJobQueues(r.Context()); err != nil {
-		respondErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
 	id := r.PathValue("id")
 	var ownerType, ownerID, status, vote string
 	var tip float64
@@ -71,10 +67,6 @@ LIMIT 1`, id, string(actor.OwnerType), actor.OwnerID).Scan(&workDeadlineAt)
 }
 
 func (s *Server) handleJobList(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
-	if err := s.syncJobQueues(r.Context()); err != nil {
-		respondErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
 	status := r.URL.Query().Get("status")
 	sessionID := r.URL.Query().Get("session_id")
 	rows, err := s.db.Query(r.Context(), `
@@ -123,10 +115,6 @@ func (s *Server) handleRoutingJobsPublic(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) serveRoutingJobs(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
-	if err := s.syncJobQueues(r.Context()); err != nil {
-		respondErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
 	if err := s.markDispatcherActivity(r.Context(), actor); err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return

@@ -898,6 +898,8 @@ function DispatchPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequi
         setError("cannot assign to your own responder identity");
       } else if (msg === "prompter_cannot_be_responder") {
         setError("job creator cannot also be the responder");
+      } else if (msg === "responder_not_available") {
+        setError("responder is no longer actively polling");
       } else if (msg === "dispatcher_cannot_assign_own_jobs") {
         setError("backend is running old assignment rules; rebuild/restart the api container");
       } else {
@@ -1134,14 +1136,29 @@ function RespondPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequir
     }
   };
 
-  const cancelPoll = () => {
-    pollAbortRef.current?.abort();
-    pollAbortRef.current = null;
-    setBusy(false);
-    setCandidates([]);
+  const cancelPoll = async () => {
+    if (!auth) return;
+    setBusy(true);
     setError("");
-    setPollingOrigin("idle");
-    setExternalWaitUntil("");
+    try {
+      const data = await api<{ ok?: boolean; mode?: "assigned"; job_id?: string }>("/responders/availability", auth, {
+        method: "DELETE",
+      });
+      pollAbortRef.current?.abort();
+      pollAbortRef.current = null;
+      if (data.mode === "assigned" && data.job_id) {
+        await openJob(data.job_id);
+        return;
+      }
+      setCandidates([]);
+      setPollingOrigin("idle");
+      setExternalWaitUntil("");
+      setRespondState("poll");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const submitReply = async () => {

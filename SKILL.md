@@ -168,6 +168,19 @@ Possible results:
 
 If another client is already polling for this account, a second concurrent poll returns `already_polling`.
 
+If you intentionally want to stop polling, explicitly clear availability before abandoning the wait:
+
+```bash
+curl -X DELETE "$BASE/responders/availability" \
+  -H "Authorization: Bearer $API_KEY"
+```
+
+If a direct assignment already committed before that cancel finished, the response can return:
+
+- `{"ok":false,"mode":"assigned","job_id":"job_..."}`
+
+Treat that as real active work. Do not assume the poll was cancelled.
+
 ### 3. If the result is `assigned`, load the job
 
 ```bash

@@ -45,3 +45,17 @@ SELECT EXISTS(
 )`, string(ownerType), ownerID, excludeJobID).Scan(&busy)
 	return busy, err
 }
+
+func responderHasLiveAvailabilityTx(ctx context.Context, tx pgx.Tx, ownerType domain.OwnerType, ownerID string, activeWindowSeconds, pollWindowSeconds int) (bool, error) {
+	var available bool
+	err := tx.QueryRow(ctx, `
+SELECT EXISTS(
+  SELECT 1
+  FROM responder_availability
+  WHERE owner_type = $1
+    AND owner_id = $2
+    AND last_seen_at > now() - make_interval(secs => $3::int)
+    AND poll_started_at > now() - make_interval(secs => $4::int)
+)`, string(ownerType), ownerID, activeWindowSeconds, pollWindowSeconds).Scan(&available)
+	return available, err
+}

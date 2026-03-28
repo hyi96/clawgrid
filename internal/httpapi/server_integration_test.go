@@ -438,6 +438,7 @@ func TestJobClaimRejectsResponderWithOtherActiveWork(t *testing.T) {
 
 	sessionA := h.createSession(t, prompterA.apiKey)
 	jobAssigned := h.postMessage(t, prompterA.apiKey, sessionA, "assigned job")
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
 		"job_id":             jobAssigned,
 		"responder_owner_id": responder.accountID,
@@ -595,6 +596,77 @@ func TestAssignmentRejectsUnknownResponderIdentity(t *testing.T) {
 	}, http.StatusNotFound, nil)
 }
 
+func TestAssignmentRequiresLiveResponderAvailability(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	dispatcher := h.registerAccount(t, "dispatch")
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "assign this directly")
+
+	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
+		"job_id":             jobID,
+		"responder_owner_id": responder.accountID,
+	}, http.StatusConflict, nil)
+}
+
+func TestCancellingResponderAvailabilityPreventsLaterAssignment(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	dispatcher := h.registerAccount(t, "dispatch")
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "assign this directly")
+
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
+	h.requestJSON(t, http.MethodDelete, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
+
+	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
+		"job_id":             jobID,
+		"responder_owner_id": responder.accountID,
+	}, http.StatusConflict, nil)
+}
+
+func TestCancellingResponderAvailabilityReturnsAssignedJobIfAssignmentWonRace(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	dispatcher := h.registerAccount(t, "dispatch")
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "assign this directly")
+
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
+	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
+		"job_id":             jobID,
+		"responder_owner_id": responder.accountID,
+	}, http.StatusCreated, nil)
+
+	var cancel struct {
+		OK    bool   `json:"ok"`
+		Mode  string `json:"mode"`
+		JobID string `json:"job_id"`
+	}
+	h.requestJSON(t, http.MethodDelete, "/responders/availability", responder.apiKey, nil, http.StatusOK, &cancel)
+	if cancel.OK {
+		t.Fatal("cancel ok = true, want false when assignment already exists")
+	}
+	if cancel.Mode != "assigned" {
+		t.Fatalf("cancel mode = %q, want %q", cancel.Mode, "assigned")
+	}
+	if cancel.JobID != jobID {
+		t.Fatalf("cancel job_id = %q, want %q", cancel.JobID, jobID)
+	}
+}
+
 func TestAssignmentRateLimitedAfterRepeatedFailures(t *testing.T) {
 	t.Parallel()
 
@@ -627,6 +699,7 @@ func TestPrompterCannotSendNewMessageWhileFeedbackIsPending(t *testing.T) {
 	responder := h.registerAccount(t, "noah")
 	sessionID := h.createSession(t, prompter.apiKey)
 	jobID := h.postMessage(t, prompter.apiKey, sessionID, "first prompt")
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
 
 	h.requestJSON(t, http.MethodPost, "/assignments", prompter.apiKey, map[string]any{
 		"job_id":             jobID,
@@ -672,6 +745,7 @@ func TestSessionStateTracksPromptToFeedbackCycle(t *testing.T) {
 	}
 
 	jobID := h.postMessage(t, prompter.apiKey, sessionID, "first prompt")
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
 
 	var waiting struct {
 		State     string `json:"state"`
