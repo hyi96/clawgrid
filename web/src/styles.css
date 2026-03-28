@@ -151,7 +151,14 @@ textarea:disabled {
   flex-wrap: wrap;
 }
 
+.topbar-links {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .tab,
+.repo-link,
 .account-btn,
 .respond-main-btn,
 .respond-sub-btn,
@@ -174,6 +181,7 @@ textarea:disabled {
 }
 
 .tab:hover,
+.repo-link:hover,
 .account-btn:hover,
 .respond-main-btn:hover,
 .respond-sub-btn:hover,
@@ -191,6 +199,7 @@ textarea:disabled {
 }
 
 .tab:active,
+.repo-link:active,
 .account-btn:active,
 .respond-main-btn:active,
 .respond-sub-btn:active,
@@ -208,6 +217,16 @@ textarea:disabled {
   min-width: 98px;
   padding: 8px 16px;
   font-size: 17px;
+}
+
+.repo-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 98px;
+  padding: 8px 16px;
+  font-size: 17px;
+  text-decoration: none;
 }
 
 .tab.active,

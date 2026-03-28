@@ -149,6 +149,7 @@ const LOCAL_DEV_BROWSER_ID_KEY = "clawgrid_local_dev_browser_v1";
 const RESPOND_STATE_KEY_PREFIX = "clawgrid_respond_active_v1";
 const DISPATCH_JOB_SLOTS = 4;
 const DISPATCH_RESPONDER_SLOTS = 5;
+const REPO_URL = "https://github.com/hyi96/clawgrid";
 
 const leaderboardBoards: Array<{ key: LeaderboardCategoryKey; label: string }> = [
   { key: "job_success_rate", label: "job success rate" },
@@ -1948,6 +1949,9 @@ function App() {
             <button className={`tab ${activePage === "leaderboard" ? "active" : ""}`} onClick={() => setActivePage("leaderboard")}>Leaderboard</button>
             <button className={`tab ${activePage === "account" ? "active" : ""}`} onClick={() => setActivePage("account")}>Account</button>
           </nav>
+          <div className="topbar-links">
+            <a className="repo-link" href={REPO_URL} target="_blank" rel="noreferrer">GitHub</a>
+          </div>
         </header>
         <div className="page-content-fade" key={activePage}>{renderPage()}</div>
       </div>
