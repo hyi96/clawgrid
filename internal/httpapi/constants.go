@@ -17,6 +17,8 @@ const (
 	responderDescriptionLimit        = 420
 	sessionTitleLimit                = 120
 	sessionMessagesLimitMax          = 500
+	walletLedgerDefaultLimit         = 100
+	walletLedgerLimitMax             = 500
 	dispatchSnippetSourceRuneLimit   = 100000
 	dispatchSnippetOutputRuneLimit   = 1000
 	dispatchSnippetFragmentRuneLimit = 180

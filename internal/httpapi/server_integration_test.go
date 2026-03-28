@@ -1429,6 +1429,73 @@ VALUES ($1, 'account', $2, now(), now())`,
 	}
 }
 
+func TestWalletLedgerPagination(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	account := h.registerAccount(t, "tom")
+	ledger1 := domain.NewID("led")
+	ledger2 := domain.NewID("led")
+	ledger3 := domain.NewID("led")
+	ledger4 := domain.NewID("led")
+
+	h.execSQL(t, `DELETE FROM wallet_ledger WHERE owner_type = 'account' AND owner_id = $1`, account.accountID)
+	h.execSQL(t, `
+INSERT INTO wallet_ledger(id, owner_type, owner_id, delta, reason, created_at)
+VALUES
+  ($1, 'account', $5, 1.0, 'r1', now() - interval '4 seconds'),
+  ($2, 'account', $5, 2.0, 'r2', now() - interval '3 seconds'),
+  ($3, 'account', $5, 3.0, 'r3', now() - interval '2 seconds'),
+  ($4, 'account', $5, 4.0, 'r4', now() - interval '1 second')`,
+		ledger1, ledger2, ledger3, ledger4, account.accountID)
+
+	var latest struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+		HasMoreOlder bool   `json:"has_more_older"`
+		NextBeforeID string `json:"next_before_id"`
+	}
+	h.requestJSON(t, http.MethodGet, "/wallets/current/ledger?limit=2", account.apiKey, nil, http.StatusOK, &latest)
+	if len(latest.Items) != 2 {
+		t.Fatalf("latest item count = %d, want 2", len(latest.Items))
+	}
+	if latest.Items[0].ID != ledger4 || latest.Items[1].ID != ledger3 {
+		t.Fatalf("latest items = %+v, want [%s %s]", latest.Items, ledger4, ledger3)
+	}
+	if !latest.HasMoreOlder {
+		t.Fatal("has_more_older = false, want true")
+	}
+	if latest.NextBeforeID != ledger3 {
+		t.Fatalf("next_before_id = %q, want %q", latest.NextBeforeID, ledger3)
+	}
+
+	var older struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+		HasMoreOlder bool   `json:"has_more_older"`
+		NextBeforeID string `json:"next_before_id"`
+	}
+	h.requestJSON(t, http.MethodGet, "/wallets/current/ledger?limit=2&before_id="+ledger3, account.apiKey, nil, http.StatusOK, &older)
+	if len(older.Items) != 2 {
+		t.Fatalf("older item count = %d, want 2", len(older.Items))
+	}
+	if older.Items[0].ID != ledger2 || older.Items[1].ID != ledger1 {
+		t.Fatalf("older items = %+v, want [%s %s]", older.Items, ledger2, ledger1)
+	}
+	if older.HasMoreOlder {
+		t.Fatal("older has_more_older = true, want false")
+	}
+	if older.NextBeforeID != "" {
+		t.Fatalf("older next_before_id = %q, want empty", older.NextBeforeID)
+	}
+
+	h.requestJSON(t, http.MethodGet, "/wallets/current/ledger?limit=0", account.apiKey, nil, http.StatusBadRequest, nil)
+	h.requestJSON(t, http.MethodGet, "/wallets/current/ledger?before_id=led_missing", account.apiKey, nil, http.StatusBadRequest, nil)
+}
+
 func TestPoolClaimReplyVoteFlowUpdatesStats(t *testing.T) {
 	t.Parallel()
 

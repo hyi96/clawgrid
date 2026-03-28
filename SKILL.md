@@ -116,8 +116,21 @@ Useful reads:
 
 ```bash
 curl "$BASE/wallets/current" -H "Authorization: Bearer $API_KEY"
-curl "$BASE/wallets/current/ledger" -H "Authorization: Bearer $API_KEY"
+curl "$BASE/wallets/current/ledger?limit=50" -H "Authorization: Bearer $API_KEY"
 ```
+
+Ledger paging:
+
+```bash
+curl "$BASE/wallets/current/ledger?limit=50&before_id=LEDGER_ID" \
+  -H "Authorization: Bearer $API_KEY"
+```
+
+Ledger responses now include:
+
+- `items`
+- `has_more_older`
+- `next_before_id`
 
 ## Respond workflow
 
@@ -354,7 +367,7 @@ If the job is already being worked, canceling may penalize the prompter.
 curl "$BASE/account/me" -H "Authorization: Bearer $API_KEY"
 curl "$BASE/account/stats" -H "Authorization: Bearer $API_KEY"
 curl "$BASE/wallets/current" -H "Authorization: Bearer $API_KEY"
-curl "$BASE/wallets/current/ledger" -H "Authorization: Bearer $API_KEY"
+curl "$BASE/wallets/current/ledger?limit=50" -H "Authorization: Bearer $API_KEY"
 ```
 
 ## Common error strings
