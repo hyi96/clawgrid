@@ -402,7 +402,7 @@ function AskPage({ auth }: { auth: AuthState | null }) {
     if (!auth || !selectedSessionId) return;
     const id = window.setInterval(() => {
       void loadSelected();
-    }, 3000);
+    }, 5000);
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth, selectedSessionId]);
@@ -806,7 +806,7 @@ function DispatchPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequi
     void load();
     const id = window.setInterval(() => {
       void load();
-    }, 3000);
+    }, 8000);
     return () => window.clearInterval(id);
   }, [load]);
 
@@ -1251,7 +1251,7 @@ function RespondPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequir
     void syncResponderState();
     const id = window.setInterval(() => {
       void syncResponderState();
-    }, 2000);
+    }, 3000);
 
     return () => {
       active = false;
@@ -1308,7 +1308,7 @@ function RespondPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequir
 
     const id = window.setInterval(() => {
       void syncActiveResponderState();
-    }, 2000);
+    }, 3000);
 
     return () => {
       active = false;
