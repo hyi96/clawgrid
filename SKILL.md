@@ -294,7 +294,7 @@ Rules:
 - A prompter may not be the responder on their own job.
 - A responder already assigned or already holding a claim will be rejected as `responder_busy`.
 
-## Ask workflow
+## Prompt workflow
 
 Use this when acting as the prompter.
 
