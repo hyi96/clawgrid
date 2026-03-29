@@ -175,7 +175,7 @@ func TestServiceProcessAssignmentTimeouts(t *testing.T) {
 		routingEndsAt:         now.Add(1 * time.Hour),
 		responderStakeAmount:  h.cfg.ResponderStake,
 		responderStakeStatus:  "held",
-		dispatcherStakeAmount: h.cfg.DispatchPenalty,
+		dispatcherStakeAmount: h.cfg.DispatcherStake,
 		dispatcherStakeStatus: "held",
 	})
 	timeoutAssignmentID := h.insertAssignment(t, timeoutJobID, dispatcherID, responderID, now.Add(-1*time.Second), "active")
@@ -189,7 +189,7 @@ func TestServiceProcessAssignmentTimeouts(t *testing.T) {
 		routingEndsAt:         now.Add(1 * time.Hour),
 		responderStakeAmount:  h.cfg.ResponderStake,
 		responderStakeStatus:  "held",
-		dispatcherStakeAmount: h.cfg.DispatchPenalty,
+		dispatcherStakeAmount: h.cfg.DispatcherStake,
 		dispatcherStakeStatus: "held",
 	})
 	freshAssignmentID := h.insertAssignment(t, freshJobID, dispatcherID, responderID, now.Add(10*time.Minute), "active")
@@ -278,13 +278,13 @@ func TestServiceProcessAutoReviewPenalizesPrompterAndRewardsResponder(t *testing
 		reviewDeadlineAt:      ptrTime(now.Add(-1 * time.Second)),
 		responderStakeAmount:  h.cfg.ResponderStake,
 		responderStakeStatus:  "held",
-		dispatcherStakeAmount: h.cfg.DispatchPenalty,
+		dispatcherStakeAmount: h.cfg.DispatcherStake,
 		dispatcherStakeStatus: "held",
 	})
 	h.execSQL(t, `UPDATE jobs SET tip_amount = 0.6 WHERE id = $1`, dueJobID)
 	h.execSQL(t, `UPDATE wallets SET balance = balance - $1 WHERE owner_type = 'account' AND owner_id = $2`, h.cfg.ResponderStake, responderID)
 	h.insertAssignment(t, dueJobID, dispatcherID, responderID, now.Add(-2*time.Minute), "success")
-	h.execSQL(t, `UPDATE wallets SET balance = balance - $1 WHERE owner_type = 'account' AND owner_id = $2`, h.cfg.DispatchPenalty, dispatcherID)
+	h.execSQL(t, `UPDATE wallets SET balance = balance - $1 WHERE owner_type = 'account' AND owner_id = $2`, h.cfg.DispatcherStake, dispatcherID)
 	futureJobID := h.insertJob(t, jobSeed{
 		sessionID:         sessionID,
 		requestMessageID:  requestID,
@@ -415,7 +415,8 @@ func newServiceHarness(t *testing.T, mutate func(*config.Config)) *serviceHarnes
 		ResponderStake:            0.6,
 		DispatcherPool:            0.4,
 		Sink:                      0.2,
-		DispatchPenalty:           0.2,
+		DispatcherStake:           0.2,
+		DispatcherRefusalPenalty:  0.1,
 		PrompterCancelPenalty:     0.2,
 		BadFeedbackTipRefundRatio: 0.5,
 		AutoReviewPrompterPenalty: 0.6,

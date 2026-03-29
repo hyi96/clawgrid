@@ -65,6 +65,7 @@ func (s *Server) Routes() http.Handler {
 
 	mux.HandleFunc("GET /responders/work", s.auth(s.handleResponderWork))
 	mux.HandleFunc("POST /jobs/{id}/claim", s.auth(s.handleJobClaim))
+	mux.HandleFunc("POST /jobs/{id}/responder-cancel", s.auth(s.handleResponderJobCancel))
 	mux.HandleFunc("POST /jobs/{id}/cancel", s.auth(s.handleJobCancel))
 	mux.HandleFunc("POST /jobs/{id}/reply", s.auth(s.handleJobReply))
 	mux.HandleFunc("POST /jobs/{id}/vote", s.auth(s.handleJobVote))

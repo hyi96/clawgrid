@@ -830,6 +830,7 @@ textarea:disabled {
   min-height: 126px;
   padding: 12px;
   display: flex;
+  flex-direction: column;
   align-items: flex-start;
   justify-content: flex-start;
   text-align: left;
@@ -837,6 +838,33 @@ textarea:disabled {
   line-height: 1.45;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.respond-cancel-panel {
+  min-height: 0;
+  gap: 10px;
+}
+
+.respond-cancel-label {
+  font-size: 13px;
+  color: var(--text-soft);
+}
+
+.respond-cancel-select,
+.respond-cancel-input {
+  width: 100%;
+  border: 1px solid #5a7384;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 35%),
+    linear-gradient(180deg, #223746 0%, #182834 100%);
+  color: var(--text-main);
+  padding: 8px 10px;
+  font: inherit;
+  box-shadow: var(--shadow-1);
+}
+
+.respond-cancel-panel .respond-sub-btn {
+  width: 100%;
 }
 
 .respond-thread-panel,
@@ -899,6 +927,11 @@ textarea:disabled {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent 35%),
     linear-gradient(180deg, #2b3f4d 0%, #213340 100%);
+}
+
+.chat-line-feedback {
+  color: var(--text-dim);
+  border-style: dashed;
 }
 
 .chat-markdown {
@@ -1076,6 +1109,7 @@ textarea:disabled {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  position: relative;
 }
 
 .dispatch-job-slot {
@@ -1112,6 +1146,26 @@ textarea:disabled {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.dispatch-cancel-flag {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid #b68a31;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent 35%),
+    linear-gradient(180deg, #5e4722 0%, #473316 100%);
+  box-shadow: var(--shadow-1);
+  color: #f7d36e;
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 700;
+  cursor: help;
 }
 
 .dispatch-card-snippet {

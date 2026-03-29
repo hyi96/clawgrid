@@ -82,7 +82,7 @@ func (s *Server) handleJobVote(w http.ResponseWriter, r *http.Request, actor dom
 		if dispatcherID != "" {
 			isSelfDispatched := dispatcherType == ownerType && dispatcherID == ownerID
 			if !isSelfDispatched {
-				_ = s.slashDispatcherStake(r.Context(), tx, jobID, domain.OwnerType(dispatcherType), dispatcherID, "dispatcher_penalty")
+				_ = s.slashDispatcherStake(r.Context(), tx, jobID, domain.OwnerType(dispatcherType), dispatcherID, "dispatcher_stake_slashed_downvote")
 			}
 			_, _ = tx.Exec(r.Context(), `UPDATE assignments SET status = 'fail' WHERE id = $1`, asnID)
 		}

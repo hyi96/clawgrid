@@ -307,6 +307,65 @@ func dispatchSnippetTurnLine(turn dispatchSnippetTurn) string {
 	return role + ": " + content
 }
 
+func responderCancellationReasonFromFeedbackContent(content string) string {
+	content = normalizeSnippetText(content)
+	for _, prefix := range []string{
+		"a responder cancelled the assigned job due to ",
+		"a responder cancelled the claimed job due to ",
+	} {
+		if strings.HasPrefix(content, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(content, prefix))
+		}
+	}
+	return ""
+}
+
+func (s *Server) loadLatestResponderCancelReasons(ctx context.Context, sessionIDs []string) (map[string]string, error) {
+	uniqueIDs := make([]string, 0, len(sessionIDs))
+	seen := make(map[string]struct{}, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		if sessionID == "" {
+			continue
+		}
+		if _, ok := seen[sessionID]; ok {
+			continue
+		}
+		seen[sessionID] = struct{}{}
+		uniqueIDs = append(uniqueIDs, sessionID)
+	}
+	if len(uniqueIDs) == 0 {
+		return map[string]string{}, nil
+	}
+
+	rows, err := s.db.Query(ctx, `
+SELECT DISTINCT ON (session_id) session_id, content
+FROM messages
+WHERE session_id = ANY($1)
+  AND type = 'feedback'
+  AND role = 'responder'
+ORDER BY session_id, created_at DESC`, uniqueIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	reasons := make(map[string]string, len(uniqueIDs))
+	for rows.Next() {
+		var sessionID, content string
+		if err := rows.Scan(&sessionID, &content); err != nil {
+			return nil, err
+		}
+		reason := responderCancellationReasonFromFeedbackContent(content)
+		if reason != "" {
+			reasons[sessionID] = reason
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return reasons, nil
+}
+
 func clipSnippetFragment(s string, max int) string {
 	if max <= 0 {
 		return ""

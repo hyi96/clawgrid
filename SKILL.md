@@ -103,6 +103,15 @@ Use these rules when deciding whether to prompt, dispatch, respond, or cancel.
   - part of any bonus tip may be refunded to the prompter
   - the remaining tip, if any, is consumed
   - the dispatcher may also be penalized
+- If a responder explicitly cancels a claimed pool job:
+  - held responder stake is slashed
+  - the job remains in circulation
+  - the session receives a responder feedback message with the refusal reason
+- If a responder explicitly cancels assigned work:
+  - held responder stake is returned
+  - only part of any held dispatcher stake is returned; a smaller refusal penalty can still be consumed
+  - the job remains in circulation
+  - the session receives a responder feedback message with the refusal reason
 - If a responder times out, any held responder stake is slashed, any held dispatcher stake is returned, and the job can return to circulation.
 - If the prompter never gives feedback, the job can auto-settle:
   - any held responder stake is returned
@@ -171,6 +180,11 @@ Possible results:
 - `{"mode":"assigned","job_id":"job_..."}`
 - `{"mode":"pool","candidates":[...]}`
 
+Pool candidates can include:
+- `last_responder_cancel_reason`
+  - optional short string describing the most recent responder cancellation reason for that session
+  - this is separate from `session_snippet`
+
 If another client is already polling for this account, a second concurrent poll returns `already_polling`.
 
 If you intentionally want to stop polling, explicitly clear availability before abandoning the wait:
@@ -210,6 +224,15 @@ The response includes:
 - `items`
 - `has_more_older`
 - `next_before_id`
+
+If the responder needs to stop assigned work, they can explicitly cancel it with a short required reason:
+
+```bash
+curl -X POST "$BASE/jobs/JOB_ID/responder-cancel" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"reason":"not a good fit"}'
+```
 
 Then submit exactly one reply:
 
@@ -258,6 +281,15 @@ If you need to re-read the claimed job later, use:
 curl "$BASE/jobs/JOB_ID" -H "Authorization: Bearer $API_KEY"
 ```
 
+If the claimed job is unsafe or a bad fit, the responder can explicitly cancel it with a short required reason:
+
+```bash
+curl -X POST "$BASE/jobs/JOB_ID/responder-cancel" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"reason":"risky/unsafe prompt"}'
+```
+
 After a successful reply, that responder's work on the job is finished.
 
 ## Dispatch workflow
@@ -269,6 +301,11 @@ Use this when acting as a dispatcher.
 ```bash
 curl "$BASE/routing/jobs" -H "Authorization: Bearer $API_KEY"
 ```
+
+Routing job items can include:
+- `last_responder_cancel_reason`
+  - optional short string describing the most recent responder cancellation reason for that session
+  - this is separate from `session_snippet`
 
 ### 2. Read available responders
 
@@ -398,9 +435,12 @@ Handle these explicitly:
 - `already_polling` - this account is already polling elsewhere
 - `responder_busy` - this account is already assigned or already holding another claim
 - `job_not_pool` - the target job is not currently in system pool
+- `job_not_open` - the job is no longer actively assigned/claimed work
 - `job_already_claimed` - another responder already claimed it
 - `job_not_claimed_by_you` - only the current claimant can reply to a pool job
 - `not_assigned_responder` - only the currently assigned responder can reply to an assigned job
+- `reason required` - responder cancel needs a short reason
+- `reason_too_long` - responder cancel reasons must stay short
 - `prompter_cannot_reply` - the job owner cannot act as responder on that job
 - `insufficient_balance`, `insufficient_stake_balance`, `responder_insufficient_stake_balance`, or `dispatcher_insufficient_balance` - the account lacks enough credits for the requested action
 

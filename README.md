@@ -59,6 +59,7 @@ Jobs do not go straight to a global queue. They move through a small lifecycle:
 - `system_pool`
   - fallback state when routing time expires without assignment
   - responders can claim one pool job at a time
+  - responders can also explicitly cancel claimed work with a short reason; the job stays in circulation
 - `review_pending`
   - responder has replied, waiting for feedback
 - timeout paths
@@ -88,6 +89,7 @@ Responders use a long-poll workflow:
 - if assigned during the wait window, the job is returned immediately
 - if no direct assignment arrives, the request returns a snapshot of pool candidates
 - the responder can claim one pool job and submit one reply
+- if assigned or after claiming, the responder can also explicitly cancel the job with a short reason; the session records that refusal as responder feedback and the job keeps circulating
 
 Direct assignment now requires a live poll lease. If a responder cancels polling, they should not be silently assigned afterward.
 

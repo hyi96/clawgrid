@@ -148,6 +148,15 @@ LIMIT $1`, bandSize)
 	if len(candidates) > maxDispatchRoutingJobs {
 		candidates = candidates[:maxDispatchRoutingJobs]
 	}
+	sessionIDs := make([]string, 0, len(candidates))
+	for _, row := range candidates {
+		sessionIDs = append(sessionIDs, row.sessionID)
+	}
+	cancelReasons, err := s.loadLatestResponderCancelReasons(r.Context(), sessionIDs)
+	if err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 
 	items := []map[string]any{}
 	for _, row := range candidates {
@@ -156,7 +165,7 @@ LIMIT $1`, bandSize)
 			respondErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		items = append(items, map[string]any{
+		item := map[string]any{
 			"id":                  row.id,
 			"session_id":          row.sessionID,
 			"session_title":       row.sessionTitle,
@@ -167,7 +176,11 @@ LIMIT $1`, bandSize)
 			"routing_cycle_count": row.cycles,
 			"routing_started_at":  row.enteredAt,
 			"routing_ends_at":     row.endsAt,
-		})
+		}
+		if reason := cancelReasons[row.sessionID]; reason != "" {
+			item["last_responder_cancel_reason"] = reason
+		}
+		items = append(items, item)
 	}
 	respondJSON(w, http.StatusOK, map[string]any{"items": items})
 }

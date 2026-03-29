@@ -57,6 +57,7 @@ type RoutingJob = {
   session_id: string;
   session_title?: string;
   session_snippet?: string;
+  last_responder_cancel_reason?: string;
   tip_amount: number;
   time_limit_minutes: number;
   is_rotated: boolean;
@@ -80,6 +81,7 @@ type PoolCandidate = {
   session_id?: string;
   session_title?: string;
   session_snippet?: string;
+  last_responder_cancel_reason?: string;
   pool_started_at?: string;
   pool_ends_at?: string;
   tip_amount: number;
@@ -150,6 +152,14 @@ const RESPOND_STATE_KEY_PREFIX = "clawgrid_respond_active_v1";
 const DISPATCH_JOB_SLOTS = 4;
 const DISPATCH_RESPONDER_SLOTS = 5;
 const REPO_URL = "https://github.com/hyi96/clawgrid";
+const RESPONDER_CANCEL_REASON_LIMIT = 40;
+const RESPONDER_CANCEL_REASONS = [
+  "risky/unsafe prompt",
+  "not a good fit",
+  "insufficient context",
+  "requires unavailable tools",
+  "time limit too tight",
+] as const;
 
 const leaderboardBoards: Array<{ key: LeaderboardCategoryKey; label: string }> = [
   { key: "job_success_rate", label: "job success rate" },
@@ -288,6 +298,7 @@ function authIdentityKey(auth: AuthState | null): string | null {
 }
 
 function transcriptPrefix(messageType: string, role?: string): string {
+  if (messageType === "feedback" && role === "responder") return "responder";
   if (messageType === "feedback") return "";
   if (role === "responder") return "responder";
   return "prompter";
@@ -310,6 +321,9 @@ function formatSessionTranscript(
   let lastResponderMessageID = "";
   for (const message of messages) {
     if (message.type === "feedback") {
+      if (message.role === "responder") {
+        continue;
+      }
       if (lastResponderMessageID) {
         feedbackByReplyId.set(lastResponderMessageID, feedbackTranscriptSuffix(message.content));
       }
@@ -321,7 +335,7 @@ function formatSessionTranscript(
   }
 
   return messages
-    .filter((message) => message.type !== "feedback")
+    .filter((message) => message.type !== "feedback" || message.role === "responder")
     .map((message) => {
       const prefix = transcriptPrefix(message.type, message.role);
       const suffix =
@@ -936,6 +950,15 @@ function DispatchPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequi
               data-job-drop="true"
               data-job-id={job.id}
             >
+              {job.last_responder_cancel_reason?.trim() && (
+                <span
+                  className="dispatch-cancel-flag"
+                  title={`this job was recently cancelled due to ${job.last_responder_cancel_reason}`}
+                  aria-label={`this job was recently cancelled due to ${job.last_responder_cancel_reason}`}
+                >
+                  !
+                </span>
+              )}
               <div className="dispatch-card-pill" title={title}>{title}</div>
               <p className="dispatch-card-snippet">{job.session_snippet?.trim() ? job.session_snippet : "no recent messages"}</p>
               <p className="dispatch-card-meta">time limit: {job.time_limit_minutes > 0 ? `${job.time_limit_minutes}m` : "-"}</p>
@@ -1015,6 +1038,8 @@ function RespondPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequir
   const [activeJob, setActiveJob] = useState<JobDetail | null>(null);
   const [activeMessages, setActiveMessages] = useState<MessageItem[]>([]);
   const [reply, setReply] = useState("");
+  const [cancelReason, setCancelReason] = useState("");
+  const [customCancelReason, setCustomCancelReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [countdownNow, setCountdownNow] = useState(() => Date.now());
@@ -1033,6 +1058,8 @@ function RespondPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequir
     setActiveJob(null);
     setActiveMessages([]);
     setReply("");
+    setCancelReason("");
+    setCustomCancelReason("");
     clearPersistedActive();
   };
 
@@ -1173,6 +1200,29 @@ function RespondPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequir
       });
       clearActiveView();
       setCandidates([]);
+      setRespondState("poll");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const effectiveCancelReason = customCancelReason.trim() || cancelReason;
+
+  const cancelActiveJob = async () => {
+    if (!auth || !activeJob || !effectiveCancelReason) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/jobs/${activeJob.id}/responder-cancel`, auth, {
+        method: "POST",
+        body: JSON.stringify({ reason: effectiveCancelReason }),
+      });
+      clearActiveView();
+      setCandidates([]);
+      setPollingOrigin("idle");
+      setExternalWaitUntil("");
       setRespondState("poll");
     } catch (e) {
       setError((e as Error).message);
@@ -1401,6 +1451,15 @@ function RespondPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequir
             const title = candidate.session_title?.trim() ? candidate.session_title : candidate.session_id ?? candidate.id;
             return (
             <button className="dispatch-card dispatch-job-slot respond-pool-job-card" key={candidate.id} onClick={() => void openJob(candidate.id, { claimFirst: true })} disabled={busy}>
+              {candidate.last_responder_cancel_reason?.trim() && (
+                <span
+                  className="dispatch-cancel-flag"
+                  title={`this job was recently cancelled due to ${candidate.last_responder_cancel_reason}`}
+                  aria-label={`this job was recently cancelled due to ${candidate.last_responder_cancel_reason}`}
+                >
+                  !
+                </span>
+              )}
               <div className="dispatch-card-pill" title={title}>{title}</div>
               <p className="dispatch-card-snippet">{candidate.session_snippet?.trim() ? candidate.session_snippet : "no recent messages"}</p>
               <p className="dispatch-card-meta">time limit: {candidate.time_limit_minutes > 0 ? `${candidate.time_limit_minutes}m` : "-"}</p>
@@ -1426,6 +1485,32 @@ function RespondPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequir
         <div className="respond-side-box">status: {activeJob?.status}</div>
         <div className="respond-side-box">timer: {formatCountdown(activeJob?.work_deadline_at, countdownNow)}</div>
         <div className="respond-side-box">session: {activeJob?.session_id}</div>
+        <div className="respond-side-box respond-cancel-panel">
+          <label className="respond-cancel-label" htmlFor="respond-cancel-reason">cancel reason</label>
+          <select
+            id="respond-cancel-reason"
+            className="respond-cancel-select"
+            value={cancelReason}
+            onChange={(event) => setCancelReason(event.target.value)}
+            disabled={busy}
+          >
+            <option value="">select a preset reason</option>
+            {RESPONDER_CANCEL_REASONS.map((reason) => (
+              <option key={reason} value={reason}>{reason}</option>
+            ))}
+          </select>
+          <input
+            className="respond-cancel-input"
+            type="text"
+            value={customCancelReason}
+            onChange={(event) => setCustomCancelReason(event.target.value.slice(0, RESPONDER_CANCEL_REASON_LIMIT))}
+            placeholder="or enter a custom reason"
+            disabled={busy}
+          />
+          <button className="respond-sub-btn" type="button" onClick={() => void cancelActiveJob()} disabled={busy || !effectiveCancelReason}>
+            cancel job
+          </button>
+        </div>
       </aside>
 
       <section className="respond-thread-panel">

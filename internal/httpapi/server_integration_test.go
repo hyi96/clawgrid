@@ -1950,6 +1950,173 @@ func TestPrompterCancelClaimedJobAppliesPenalty(t *testing.T) {
 	}
 }
 
+func TestResponderCancelsClaimedJobSlashesStakeAndKeepsJobCirculating(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.PollAssignmentWait = 0
+	})
+
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "claim and then cancel")
+
+	var work struct {
+		Mode       string `json:"mode"`
+		Candidates []struct {
+			ID string `json:"id"`
+		} `json:"candidates"`
+	}
+	h.requestJSON(t, http.MethodGet, "/responders/work", responder.apiKey, nil, http.StatusOK, &work)
+	if work.Mode != "pool" || len(work.Candidates) != 1 || work.Candidates[0].ID != jobID {
+		t.Fatalf("unexpected work payload: %+v", work)
+	}
+
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/claim", responder.apiKey, nil, http.StatusOK, nil)
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/responder-cancel", responder.apiKey, map[string]any{
+		"reason": "not a good fit",
+	}, http.StatusOK, nil)
+
+	if got := h.walletBalance(t, responder.apiKey); math.Abs(got-99.4) > 1e-9 {
+		t.Fatalf("responder balance = %v, want %v", got, 99.4)
+	}
+
+	var jobStatus, responderStakeStatus string
+	var claimOwnerType, claimOwnerID *string
+	if err := h.appPool.QueryRow(context.Background(), `SELECT status, responder_stake_status, claim_owner_type, claim_owner_id FROM jobs WHERE id = $1`, jobID).Scan(&jobStatus, &responderStakeStatus, &claimOwnerType, &claimOwnerID); err != nil {
+		t.Fatalf("load job after claimed cancel: %v", err)
+	}
+	if jobStatus != "system_pool" {
+		t.Fatalf("job status = %q, want %q", jobStatus, "system_pool")
+	}
+	if responderStakeStatus != "slashed" {
+		t.Fatalf("responder stake status = %q, want %q", responderStakeStatus, "slashed")
+	}
+	if claimOwnerType != nil || claimOwnerID != nil {
+		t.Fatalf("claim owner not cleared: type=%v id=%v", claimOwnerType, claimOwnerID)
+	}
+
+	if got := h.scalarString(t, `SELECT content FROM messages WHERE session_id = $1 AND type = 'feedback' AND role = 'responder' ORDER BY created_at DESC LIMIT 1`, sessionID); got != "a responder cancelled the claimed job due to not a good fit" {
+		t.Fatalf("feedback message = %q", got)
+	}
+	otherResponder := h.registerAccount(t, "mia")
+	var refreshedWork struct {
+		Mode       string `json:"mode"`
+		Candidates []struct {
+			ID                        string `json:"id"`
+			SessionSnippet            string `json:"session_snippet"`
+			LastResponderCancelReason string `json:"last_responder_cancel_reason"`
+		} `json:"candidates"`
+	}
+	h.requestJSON(t, http.MethodGet, "/responders/work", otherResponder.apiKey, nil, http.StatusOK, &refreshedWork)
+	if refreshedWork.Mode != "pool" || len(refreshedWork.Candidates) != 1 {
+		t.Fatalf("unexpected refreshed work payload: %+v", refreshedWork)
+	}
+	if got := refreshedWork.Candidates[0].LastResponderCancelReason; got != "not a good fit" {
+		t.Fatalf("last_responder_cancel_reason = %q, want %q", got, "not a good fit")
+	}
+	if strings.Contains(refreshedWork.Candidates[0].SessionSnippet, "not a good fit") {
+		t.Fatalf("session_snippet = %q, should not include cancel reason", refreshedWork.Candidates[0].SessionSnippet)
+	}
+}
+
+func TestResponderCancelsAssignedJobRefundsResponderStakeAndPartiallyRefundsDispatcherStake(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.PoolDwellWindow = 0
+	})
+
+	prompter := h.registerAccount(t, "tom")
+	dispatcher := h.registerAccount(t, "dora")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "assign and then refuse")
+
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
+
+	var assignment struct {
+		ID string `json:"id"`
+	}
+	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
+		"job_id":             jobID,
+		"responder_owner_id": responder.accountID,
+	}, http.StatusCreated, &assignment)
+
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/responder-cancel", responder.apiKey, map[string]any{
+		"reason": "time limit too tight",
+	}, http.StatusOK, nil)
+
+	if got := h.walletBalance(t, responder.apiKey); math.Abs(got-100.0) > 1e-9 {
+		t.Fatalf("responder balance = %v, want %v", got, 100.0)
+	}
+	if got := h.walletBalance(t, dispatcher.apiKey); math.Abs(got-99.9) > 1e-9 {
+		t.Fatalf("dispatcher balance = %v, want %v", got, 99.9)
+	}
+
+	var jobStatus, responderStakeStatus, dispatcherStakeStatus, assignmentStatus string
+	if err := h.appPool.QueryRow(context.Background(), `SELECT status, responder_stake_status, dispatcher_stake_status FROM jobs WHERE id = $1`, jobID).Scan(&jobStatus, &responderStakeStatus, &dispatcherStakeStatus); err != nil {
+		t.Fatalf("load job after assigned cancel: %v", err)
+	}
+	if jobStatus != "system_pool" {
+		t.Fatalf("job status = %q, want %q", jobStatus, "system_pool")
+	}
+	if responderStakeStatus != "returned" {
+		t.Fatalf("responder stake status = %q, want %q", responderStakeStatus, "returned")
+	}
+	if dispatcherStakeStatus != "partial_returned" {
+		t.Fatalf("dispatcher stake status = %q, want %q", dispatcherStakeStatus, "partial_returned")
+	}
+	if err := h.appPool.QueryRow(context.Background(), `SELECT status FROM assignments WHERE id = $1`, assignment.ID).Scan(&assignmentStatus); err != nil {
+		t.Fatalf("load assignment status: %v", err)
+	}
+	if assignmentStatus != "refused" {
+		t.Fatalf("assignment status = %q, want %q", assignmentStatus, "refused")
+	}
+	if got := h.scalarInt(t, `SELECT COUNT(*)::int FROM responder_availability WHERE owner_type = 'account' AND owner_id = $1`, responder.accountID); got != 0 {
+		t.Fatalf("responder availability count = %d, want 0", got)
+	}
+	if got := h.scalarString(t, `SELECT content FROM messages WHERE session_id = $1 AND type = 'feedback' AND role = 'responder' ORDER BY created_at DESC LIMIT 1`, sessionID); got != "a responder cancelled the assigned job due to time limit too tight" {
+		t.Fatalf("feedback message = %q", got)
+	}
+	if _, err := h.app.svc.ProcessPoolRotation(context.Background()); err != nil {
+		t.Fatalf("process pool rotation: %v", err)
+	}
+	var routing struct {
+		Items []struct {
+			ID                        string `json:"id"`
+			SessionSnippet            string `json:"session_snippet"`
+			LastResponderCancelReason string `json:"last_responder_cancel_reason"`
+		} `json:"items"`
+	}
+	h.requestJSON(t, http.MethodGet, "/routing/jobs", dispatcher.apiKey, nil, http.StatusOK, &routing)
+	if len(routing.Items) != 1 || routing.Items[0].ID != jobID {
+		t.Fatalf("unexpected routing payload: %+v", routing)
+	}
+	if got := routing.Items[0].LastResponderCancelReason; got != "time limit too tight" {
+		t.Fatalf("last_responder_cancel_reason = %q, want %q", got, "time limit too tight")
+	}
+	if strings.Contains(routing.Items[0].SessionSnippet, "time limit too tight") {
+		t.Fatalf("session_snippet = %q, should not include cancel reason", routing.Items[0].SessionSnippet)
+	}
+}
+
+func TestResponderJobCancelRequiresShortReason(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+	responder := h.registerAccount(t, "noah")
+
+	h.requestJSON(t, http.MethodPost, "/jobs/job_missing/responder-cancel", responder.apiKey, map[string]any{
+		"reason": "",
+	}, http.StatusBadRequest, nil)
+
+	h.requestJSON(t, http.MethodPost, "/jobs/job_missing/responder-cancel", responder.apiKey, map[string]any{
+		"reason": strings.Repeat("x", responderCancelReasonLimit+1),
+	}, http.StatusBadRequest, nil)
+}
+
 func TestDirectAssignmentResponderWorkReturnsAssignedJob(t *testing.T) {
 	t.Parallel()
 
@@ -2333,7 +2500,8 @@ func newIntegrationHarnessWithConfig(t *testing.T, mutate func(*config.Config)) 
 		ResponderStake:            0.6,
 		DispatcherPool:            0.4,
 		Sink:                      0.2,
-		DispatchPenalty:           0.2,
+		DispatcherStake:           0.2,
+		DispatcherRefusalPenalty:  0.1,
 		PrompterCancelPenalty:     0.2,
 		BadFeedbackTipRefundRatio: 0.5,
 		AutoReviewPrompterPenalty: 0.6,

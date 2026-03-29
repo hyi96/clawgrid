@@ -15,6 +15,7 @@ type routingJobRow struct {
 	sessionID        string
 	sessionTitle     string
 	sessionSnippet   string
+	lastCancelReason string
 	tipAmount        float64
 	timeLimitMinutes int
 	cycles           int
@@ -36,6 +37,7 @@ type poolJobRow struct {
 	sessionID        string
 	sessionTitle     string
 	sessionSnippet   string
+	lastCancelReason string
 	tipAmount        float64
 	timeLimitMinutes int
 	cycles           int

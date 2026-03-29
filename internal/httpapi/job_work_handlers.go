@@ -1,12 +1,16 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"clawgrid/internal/domain"
+	"github.com/jackc/pgx/v5"
 )
 
 func (s *Server) handleJobClaim(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
@@ -163,6 +167,174 @@ RETURNING claim_expires_at`, jobID, string(actor.OwnerType), actor.OwnerID, time
 		"claim_owner_type":    string(actor.OwnerType),
 		"claim_owner_id":      actor.OwnerID,
 		"work_deadline_at":    newExpiry,
+	})
+}
+
+func normalizeResponderCancelReason(reason string) (string, string) {
+	normalized := strings.Join(strings.Fields(strings.TrimSpace(reason)), " ")
+	if normalized == "" {
+		return "", "reason required"
+	}
+	if utf8.RuneCountInString(normalized) > responderCancelReasonLimit {
+		return "", "reason_too_long"
+	}
+	return normalized, ""
+}
+
+func responderCancellationFeedbackContent(kind, reason string) string {
+	return fmt.Sprintf("a responder cancelled the %s job due to %s", kind, reason)
+}
+
+func loadActiveAssignmentTx(ctx context.Context, tx pgx.Tx, jobID string) (string, string, string, string, string, error) {
+	var assignmentID, responderType, responderID, dispatcherType, dispatcherID string
+	err := tx.QueryRow(ctx, `
+SELECT id, responder_owner_type, responder_owner_id, dispatcher_owner_type, dispatcher_owner_id
+FROM assignments
+WHERE job_id = $1
+  AND status = 'active'
+ORDER BY assigned_at DESC
+LIMIT 1
+FOR UPDATE`, jobID).Scan(&assignmentID, &responderType, &responderID, &dispatcherType, &dispatcherID)
+	return assignmentID, responderType, responderID, dispatcherType, dispatcherID, err
+}
+
+func (s *Server) handleResponderJobCancel(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
+	jobID := r.PathValue("id")
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		respondErr(w, http.StatusBadRequest, "bad body")
+		return
+	}
+	reason, invalidReason := normalizeResponderCancelReason(body.Reason)
+	if invalidReason != "" {
+		respondErr(w, http.StatusBadRequest, invalidReason)
+		return
+	}
+
+	tx, err := s.db.Begin(r.Context())
+	if err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer tx.Rollback(r.Context())
+	if err := lockResponderActorTx(r.Context(), tx, actor.OwnerType, actor.OwnerID); err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	var sessionID, status string
+	var responseID, claimOwnerType, claimOwnerID *string
+	var claimExpiresAt *time.Time
+	if err := tx.QueryRow(r.Context(), `
+SELECT session_id, status, response_message_id, claim_owner_type, claim_owner_id, claim_expires_at
+FROM jobs
+WHERE id = $1
+FOR UPDATE`, jobID).Scan(&sessionID, &status, &responseID, &claimOwnerType, &claimOwnerID, &claimExpiresAt); err != nil {
+		respondErr(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if responseID != nil {
+		respondErr(w, http.StatusConflict, "job_already_replied")
+		return
+	}
+
+	cancelMode := ""
+	switch status {
+	case "assigned":
+		assignmentID, responderType, responderID, dispatcherType, dispatcherID, err := loadActiveAssignmentTx(r.Context(), tx, jobID)
+		if err != nil {
+			if err == pgx.ErrNoRows {
+				respondErr(w, http.StatusConflict, "job_not_open")
+				return
+			}
+			respondErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if responderType != string(actor.OwnerType) || responderID != actor.OwnerID {
+			respondErr(w, http.StatusForbidden, "not_assigned_responder")
+			return
+		}
+		if _, err := tx.Exec(r.Context(), `
+UPDATE jobs
+SET status = 'system_pool',
+    last_system_pool_entered_at = now(),
+    claim_owner_type = NULL,
+    claim_owner_id = NULL,
+    claim_expires_at = NULL
+WHERE id = $1`, jobID); err != nil {
+			respondErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if _, err := tx.Exec(r.Context(), `UPDATE assignments SET status = 'refused' WHERE id = $1`, assignmentID); err != nil {
+			respondErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if err := s.refundResponderStakeWithReason(r.Context(), tx, jobID, actor.OwnerType, actor.OwnerID, "responder_stake_refund_assignment_cancel"); err != nil {
+			respondErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if dispatcherType != "" && dispatcherID != "" {
+			if err := s.settleDispatcherStakeAssignedCancel(r.Context(), tx, jobID, domain.OwnerType(dispatcherType), dispatcherID); err != nil {
+				respondErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+		}
+		if _, err := tx.Exec(r.Context(), `INSERT INTO messages(id, session_id, owner_type, owner_id, type, role, content) VALUES ($1,$2,$3,$4,'feedback','responder',$5)`,
+			domain.NewID("msg"), sessionID, string(actor.OwnerType), actor.OwnerID, responderCancellationFeedbackContent("assigned", reason)); err != nil {
+			respondErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		cancelMode = "assigned"
+	case "system_pool":
+		if claimOwnerType == nil || claimOwnerID == nil || claimExpiresAt == nil || !claimExpiresAt.After(time.Now()) {
+			respondErr(w, http.StatusConflict, "job_not_claimed_by_you")
+			return
+		}
+		if *claimOwnerType != string(actor.OwnerType) || *claimOwnerID != actor.OwnerID {
+			respondErr(w, http.StatusConflict, "job_not_claimed_by_you")
+			return
+		}
+		if _, err := tx.Exec(r.Context(), `
+UPDATE jobs
+SET claim_owner_type = NULL,
+    claim_owner_id = NULL,
+    claim_expires_at = NULL
+WHERE id = $1`, jobID); err != nil {
+			respondErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if err := s.slashResponderStake(r.Context(), tx, jobID, actor.OwnerType, actor.OwnerID, "responder_stake_slashed_claim_cancel"); err != nil {
+			respondErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if _, err := tx.Exec(r.Context(), `INSERT INTO messages(id, session_id, owner_type, owner_id, type, role, content) VALUES ($1,$2,$3,$4,'feedback','responder',$5)`,
+			domain.NewID("msg"), sessionID, string(actor.OwnerType), actor.OwnerID, responderCancellationFeedbackContent("claimed", reason)); err != nil {
+			respondErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		cancelMode = "claimed"
+	default:
+		respondErr(w, http.StatusConflict, "job_not_open")
+		return
+	}
+	if err := s.clearAvailabilityTx(r.Context(), tx, actor); err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = s.clearResponderPoolSnapshot(r.Context(), actor)
+	respondJSON(w, http.StatusOK, map[string]any{
+		"ok":         true,
+		"job_id":     jobID,
+		"mode":       cancelMode,
+		"reason":     reason,
+		"job_status": "system_pool",
 	})
 }
 

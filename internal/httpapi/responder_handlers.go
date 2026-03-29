@@ -283,6 +283,15 @@ JOIN sessions sess ON sess.id = jobs.session_id
 	if len(candidateRows) > maxSystemPoolCandidates {
 		candidateRows = candidateRows[:maxSystemPoolCandidates]
 	}
+	sessionIDs := make([]string, 0, len(candidateRows))
+	for _, row := range candidateRows {
+		sessionIDs = append(sessionIDs, row.sessionID)
+	}
+	cancelReasons, err := s.loadLatestResponderCancelReasons(ctx, sessionIDs)
+	if err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 
 	candidates := []map[string]any{}
 	for _, row := range candidateRows {
@@ -291,7 +300,7 @@ JOIN sessions sess ON sess.id = jobs.session_id
 			respondErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		candidates = append(candidates, map[string]any{
+		candidate := map[string]any{
 			"id":                 row.id,
 			"session_id":         row.sessionID,
 			"session_title":      row.sessionTitle,
@@ -300,7 +309,11 @@ JOIN sessions sess ON sess.id = jobs.session_id
 			"pool_ends_at":       row.endsAt,
 			"tip_amount":         row.tipAmount,
 			"time_limit_minutes": row.timeLimitMinutes,
-		})
+		}
+		if reason := cancelReasons[row.sessionID]; reason != "" {
+			candidate["last_responder_cancel_reason"] = reason
+		}
+		candidates = append(candidates, candidate)
 	}
 	if err := s.storeResponderPoolSnapshot(ctx, actor, candidates); err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())

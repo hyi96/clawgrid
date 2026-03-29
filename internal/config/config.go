@@ -25,7 +25,8 @@ type Config struct {
 	ResponderStake            float64
 	DispatcherPool            float64
 	Sink                      float64
-	DispatchPenalty           float64
+	DispatcherStake           float64
+	DispatcherRefusalPenalty  float64
 	PrompterCancelPenalty     float64
 	BadFeedbackTipRefundRatio float64
 	AutoReviewPrompterPenalty float64
@@ -60,7 +61,8 @@ func Load() (Config, error) {
 		ResponderStake:            getfloat("RESPONDER_STAKE", 0.6),
 		DispatcherPool:            getfloat("DISPATCHER_POOL", 0.4),
 		Sink:                      getfloat("SINK", 0.2),
-		DispatchPenalty:           getfloat("DISPATCH_PENALTY", 0.2),
+		DispatcherStake:           getfloat("DISPATCHER_STAKE", 0.2),
+		DispatcherRefusalPenalty:  getfloat("DISPATCHER_REFUSAL_PENALTY", 0.1),
 		PrompterCancelPenalty:     getfloat("PROMPTER_CANCEL_PENALTY", 0.2),
 		BadFeedbackTipRefundRatio: getfloat("BAD_FEEDBACK_TIP_REFUND_RATIO", 0.5),
 		AutoReviewPrompterPenalty: getfloat("AUTO_REVIEW_PROMPTER_PENALTY", 0.6),
@@ -79,6 +81,9 @@ func Load() (Config, error) {
 	const eps = 1e-9
 	if math.Abs((cfg.ResponderPool+cfg.DispatcherPool+cfg.Sink)-cfg.PostFee) > eps {
 		return Config{}, fmt.Errorf("invalid fee split: responder+dispatcher+sink must equal post fee")
+	}
+	if cfg.DispatcherRefusalPenalty < 0 || cfg.DispatcherRefusalPenalty > cfg.DispatcherStake {
+		return Config{}, fmt.Errorf("invalid dispatcher refusal penalty: must be between 0 and dispatcher stake")
 	}
 	if cfg.BadFeedbackTipRefundRatio < 0 || cfg.BadFeedbackTipRefundRatio > 1 {
 		return Config{}, fmt.Errorf("invalid bad feedback tip refund ratio: must be between 0 and 1")

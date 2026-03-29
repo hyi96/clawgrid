@@ -307,6 +307,9 @@ export function ChatThread({
   let lastResponderMessageID = "";
   for (const row of messages) {
     if (row.type === "feedback") {
+      if (row.role === "responder") {
+        continue;
+      }
       if (lastResponderMessageID) {
         feedbackByReplyId.set(lastResponderMessageID, feedbackSuffix(row.content));
       }
@@ -320,12 +323,13 @@ export function ChatThread({
   return (
     <div className={className} ref={contentRef}>
       {messages
-        .filter((row) => row.type !== "feedback")
+        .filter((row) => row.type !== "feedback" || row.role === "responder")
         .map((row) => {
           const suffix =
             feedbackByReplyId.get(row.id) ??
             (row.role === "responder" && awaitingFeedbackReplyToMessageId === row.id ? "(awaiting feedback)" : "");
           const roleClassName = row.role === "responder" ? "chat-line-responder" : "chat-line-prompter";
+          const feedbackClassNames = row.type === "feedback" ? "chat-line-feedback feedback-line" : "";
           const contentBlocks = appendFeedbackSuffix(
             renderMarkdownBlocks(row.content, `${row.id}-content`),
             suffix,
@@ -334,7 +338,7 @@ export function ChatThread({
           );
           return (
             <div key={row.id} className={`chat-row ${row.role === "responder" ? "chat-row-responder" : "chat-row-prompter"}`}>
-              <div className={`${lineClassName} ${roleClassName}`}>
+              <div className={`${lineClassName} ${roleClassName} ${feedbackClassNames}`.trim()}>
                 <div className="chat-markdown">{contentBlocks}</div>
               </div>
             </div>
