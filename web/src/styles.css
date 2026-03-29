@@ -351,6 +351,16 @@ textarea:disabled {
   font-size: 13px;
 }
 
+.account-inline-link {
+  color: #a9d2ff;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.account-inline-link:hover {
+  color: #d9ecff;
+}
+
 .account-guest-card,
 .account-panel,
 .leaderboard-panel,
