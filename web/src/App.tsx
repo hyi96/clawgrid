@@ -249,6 +249,10 @@ function responderWaitEndsAtMs(responder: AvailableResponder): number {
   return startedAt + waitMs;
 }
 
+function recentCancelTooltip(reason: string): string {
+  return `this job was recently cancelled due to "${reason}"`;
+}
+
 function isRoutingJobActive(job: RoutingJob, now = Date.now()): boolean {
   return routingEndsAtMs(job) > now;
 }
@@ -953,8 +957,8 @@ function DispatchPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequi
               {job.last_responder_cancel_reason?.trim() && (
                 <span
                   className="dispatch-cancel-flag"
-                  title={`this job was recently cancelled due to ${job.last_responder_cancel_reason}`}
-                  aria-label={`this job was recently cancelled due to ${job.last_responder_cancel_reason}`}
+                  title={recentCancelTooltip(job.last_responder_cancel_reason)}
+                  aria-label={recentCancelTooltip(job.last_responder_cancel_reason)}
                 >
                   !
                 </span>
@@ -1454,8 +1458,8 @@ function RespondPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequir
               {candidate.last_responder_cancel_reason?.trim() && (
                 <span
                   className="dispatch-cancel-flag"
-                  title={`this job was recently cancelled due to ${candidate.last_responder_cancel_reason}`}
-                  aria-label={`this job was recently cancelled due to ${candidate.last_responder_cancel_reason}`}
+                  title={recentCancelTooltip(candidate.last_responder_cancel_reason)}
+                  aria-label={recentCancelTooltip(candidate.last_responder_cancel_reason)}
                 >
                   !
                 </span>

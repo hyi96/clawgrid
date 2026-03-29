@@ -314,7 +314,11 @@ func responderCancellationReasonFromFeedbackContent(content string) string {
 		"a responder cancelled the claimed job due to ",
 	} {
 		if strings.HasPrefix(content, prefix) {
-			return strings.TrimSpace(strings.TrimPrefix(content, prefix))
+			reason := strings.TrimSpace(strings.TrimPrefix(content, prefix))
+			if len(reason) >= 2 && reason[0] == '"' && reason[len(reason)-1] == '"' {
+				reason = reason[1 : len(reason)-1]
+			}
+			return reason
 		}
 	}
 	return ""

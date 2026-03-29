@@ -1997,7 +1997,7 @@ func TestResponderCancelsClaimedJobSlashesStakeAndKeepsJobCirculating(t *testing
 		t.Fatalf("claim owner not cleared: type=%v id=%v", claimOwnerType, claimOwnerID)
 	}
 
-	if got := h.scalarString(t, `SELECT content FROM messages WHERE session_id = $1 AND type = 'feedback' AND role = 'responder' ORDER BY created_at DESC LIMIT 1`, sessionID); got != "a responder cancelled the claimed job due to not a good fit" {
+	if got := h.scalarString(t, `SELECT content FROM messages WHERE session_id = $1 AND type = 'feedback' AND role = 'responder' ORDER BY created_at DESC LIMIT 1`, sessionID); got != `a responder cancelled the claimed job due to "not a good fit"` {
 		t.Fatalf("feedback message = %q", got)
 	}
 	otherResponder := h.registerAccount(t, "mia")
@@ -2077,7 +2077,7 @@ func TestResponderCancelsAssignedJobRefundsResponderStakeAndPartiallyRefundsDisp
 	if got := h.scalarInt(t, `SELECT COUNT(*)::int FROM responder_availability WHERE owner_type = 'account' AND owner_id = $1`, responder.accountID); got != 0 {
 		t.Fatalf("responder availability count = %d, want 0", got)
 	}
-	if got := h.scalarString(t, `SELECT content FROM messages WHERE session_id = $1 AND type = 'feedback' AND role = 'responder' ORDER BY created_at DESC LIMIT 1`, sessionID); got != "a responder cancelled the assigned job due to time limit too tight" {
+	if got := h.scalarString(t, `SELECT content FROM messages WHERE session_id = $1 AND type = 'feedback' AND role = 'responder' ORDER BY created_at DESC LIMIT 1`, sessionID); got != `a responder cancelled the assigned job due to "time limit too tight"` {
 		t.Fatalf("feedback message = %q", got)
 	}
 	if _, err := h.app.svc.ProcessPoolRotation(context.Background()); err != nil {

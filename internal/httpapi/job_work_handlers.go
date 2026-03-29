@@ -182,7 +182,7 @@ func normalizeResponderCancelReason(reason string) (string, string) {
 }
 
 func responderCancellationFeedbackContent(kind, reason string) string {
-	return fmt.Sprintf("a responder cancelled the %s job due to %s", kind, reason)
+	return fmt.Sprintf("a responder cancelled the %s job due to %q", kind, reason)
 }
 
 func loadActiveAssignmentTx(ctx context.Context, tx pgx.Tx, jobID string) (string, string, string, string, string, error) {

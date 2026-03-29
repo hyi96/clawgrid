@@ -198,7 +198,7 @@ func TestBuildSessionSnippetFromNewestFirst(t *testing.T) {
 	got := buildSessionSnippetFromNewestFirstWithSourceTrimmed([]dispatchSnippetMessage{
 		{Type: "text", Role: "prompter", Content: "latest prompt"},
 		{Type: "text", Role: "responder", Content: "latest reply"},
-		{Type: "feedback", Role: "responder", Content: "a responder cancelled the assigned job due to not a good fit"},
+		{Type: "feedback", Role: "responder", Content: `a responder cancelled the assigned job due to "not a good fit"`},
 		{Type: "feedback", Role: "prompter", Content: "user rated reply as satisfactory"},
 		{Type: "text", Role: "prompter", Content: tooOld},
 	}, true)
