@@ -15,23 +15,29 @@ import (
 )
 
 const (
-	accountHookStatusPending = "pending_verification"
-	accountHookStatusActive  = "active"
+	accountHookStatusPending                  = "pending_verification"
+	accountHookStatusActive                   = "active"
+	accountHookNotificationAssignmentReceived = "assignment_received"
+	accountHookNotificationReplyReceived      = "reply_received"
 )
 
 type accountHookRow struct {
-	ID                    string
-	URL                   string
-	Enabled               bool
-	Status                string
-	VerificationRequested time.Time
-	VerifiedAt            *time.Time
-	LastSuccessAt         *time.Time
-	LastFailureAt         *time.Time
-	ConsecutiveFailures   int
-	FailureReason         string
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
+	ID                       string
+	AccountID                string
+	URL                      string
+	AuthToken                string
+	Enabled                  bool
+	NotifyAssignmentReceived bool
+	NotifyReplyReceived      bool
+	Status                   string
+	VerificationRequested    time.Time
+	VerifiedAt               *time.Time
+	LastSuccessAt            *time.Time
+	LastFailureAt            *time.Time
+	ConsecutiveFailures      int
+	FailureReason            string
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
 }
 
 type agentHookDelivery struct {
@@ -79,18 +85,20 @@ func normalizeHookToken(raw string) string {
 
 func buildAccountHookResponse(row accountHookRow) map[string]any {
 	return map[string]any{
-		"id":                        row.ID,
-		"url":                       row.URL,
-		"enabled":                   row.Enabled,
-		"status":                    row.Status,
-		"verification_requested_at": row.VerificationRequested,
-		"verified_at":               row.VerifiedAt,
-		"last_success_at":           row.LastSuccessAt,
-		"last_failure_at":           row.LastFailureAt,
-		"consecutive_failures":      row.ConsecutiveFailures,
-		"failure_reason":            row.FailureReason,
-		"created_at":                row.CreatedAt,
-		"updated_at":                row.UpdatedAt,
+		"id":                         row.ID,
+		"url":                        row.URL,
+		"enabled":                    row.Enabled,
+		"notify_assignment_received": row.NotifyAssignmentReceived,
+		"notify_reply_received":      row.NotifyReplyReceived,
+		"status":                     row.Status,
+		"verification_requested_at":  row.VerificationRequested,
+		"verified_at":                row.VerifiedAt,
+		"last_success_at":            row.LastSuccessAt,
+		"last_failure_at":            row.LastFailureAt,
+		"consecutive_failures":       row.ConsecutiveFailures,
+		"failure_reason":             row.FailureReason,
+		"created_at":                 row.CreatedAt,
+		"updated_at":                 row.UpdatedAt,
 	}
 }
 
@@ -98,8 +106,12 @@ func (s *Server) loadAccountHook(ctx context.Context, accountID string) (*accoun
 	var row accountHookRow
 	err := s.db.QueryRow(ctx, `
 SELECT id,
+       account_id,
        url,
+       auth_token,
        enabled,
+       notify_assignment_received,
+       notify_reply_received,
        status,
        verification_requested_at,
        verified_at,
@@ -112,8 +124,12 @@ SELECT id,
 FROM account_hooks
 WHERE account_id = $1`, accountID).Scan(
 		&row.ID,
+		&row.AccountID,
 		&row.URL,
+		&row.AuthToken,
 		&row.Enabled,
+		&row.NotifyAssignmentReceived,
+		&row.NotifyReplyReceived,
 		&row.Status,
 		&row.VerificationRequested,
 		&row.VerifiedAt,
@@ -133,12 +149,44 @@ WHERE account_id = $1`, accountID).Scan(
 	return &row, nil
 }
 
+func (row accountHookRow) notificationsEnabled() bool {
+	return row.NotifyAssignmentReceived || row.NotifyReplyReceived
+}
+
+func (row accountHookRow) deliveryEnabled() bool {
+	return row.Enabled && row.Status == accountHookStatusActive && row.notificationsEnabled()
+}
+
+func (row accountHookRow) allowsNotification(kind string) bool {
+	if !row.deliveryEnabled() {
+		return false
+	}
+	switch kind {
+	case accountHookNotificationAssignmentReceived:
+		return row.NotifyAssignmentReceived
+	case accountHookNotificationReplyReceived:
+		return row.NotifyReplyReceived
+	default:
+		return false
+	}
+}
+
 func (s *Server) accountHookVerifyURL(token string) string {
 	return strings.TrimRight(s.cfg.PublicAPIBase, "/") + "/agent-hooks/verify/" + url.PathEscape(token)
 }
 
 func (s *Server) agentHookVerificationMessage(callbackURL string) string {
 	return "Clawgrid webhook verification. To verify this hook, make an HTTP POST request with no body to " + callbackURL + "."
+}
+
+func (s *Server) agentHookAssignmentReceivedMessage(jobID, sessionID string) string {
+	base := strings.TrimRight(s.cfg.PublicAPIBase, "/")
+	return "You have been assigned a Clawgrid job. Fetch " + base + "/jobs/" + jobID + " and " + base + "/sessions/" + sessionID + "/messages, then reply with POST " + base + "/jobs/" + jobID + "/reply or cancel with POST " + base + "/jobs/" + jobID + "/responder-cancel if needed."
+}
+
+func (s *Server) agentHookReplyReceivedMessage(sessionID, senderRole string) string {
+	base := strings.TrimRight(s.cfg.PublicAPIBase, "/")
+	return "A new " + senderRole + " message arrived in Clawgrid session " + sessionID + " after your earlier message. Fetch " + base + "/sessions/" + sessionID + "/messages and " + base + "/sessions/" + sessionID + "/state to inspect the latest context."
 }
 
 func (s *Server) deliverAgentHookRequest(ctx context.Context, delivery agentHookDelivery) error {
@@ -173,19 +221,98 @@ func (s *Server) deliverAgentHookRequest(ctx context.Context, delivery agentHook
 	return nil
 }
 
+func (s *Server) recordAccountHookDeliveryResult(ctx context.Context, accountID string, deliveryErr error) {
+	if accountID == "" {
+		return
+	}
+	if deliveryErr != nil {
+		_, _ = s.db.Exec(ctx, `
+UPDATE account_hooks
+SET last_failure_at = now(),
+    consecutive_failures = consecutive_failures + 1,
+    failure_reason = $2,
+    updated_at = now()
+WHERE account_id = $1`, accountID, deliveryErr.Error())
+		return
+	}
+	_, _ = s.db.Exec(ctx, `
+UPDATE account_hooks
+SET last_success_at = now(),
+    last_failure_at = NULL,
+    consecutive_failures = 0,
+    failure_reason = '',
+    updated_at = now()
+WHERE account_id = $1`, accountID)
+}
+
+func (s *Server) notifyAccountHook(ctx context.Context, accountID, kind, message string) {
+	row, err := s.loadAccountHook(ctx, accountID)
+	if err != nil || row == nil || !row.allowsNotification(kind) {
+		return
+	}
+	err = s.deliverAgentHook(ctx, agentHookDelivery{
+		URL:           row.URL,
+		AuthToken:     row.AuthToken,
+		Message:       message,
+		Name:          "Clawgrid",
+		WakeMode:      "now",
+		Deliver:       false,
+		TimeoutSecond: 30,
+	})
+	s.recordAccountHookDeliveryResult(ctx, accountID, err)
+}
+
+func (s *Server) notifyAssignmentReceived(ctx context.Context, responderAccountID, jobID, sessionID string) {
+	if responderAccountID == "" {
+		return
+	}
+	s.notifyAccountHook(ctx, responderAccountID, accountHookNotificationAssignmentReceived, s.agentHookAssignmentReceivedMessage(jobID, sessionID))
+}
+
+func (s *Server) notifyReplyReceived(ctx context.Context, sessionID string, sender domain.Actor, senderRole string) {
+	if sender.OwnerType != domain.OwnerAccount {
+		return
+	}
+	rows, err := s.db.Query(ctx, `
+SELECT DISTINCT ah.account_id
+FROM account_hooks ah
+JOIN messages m
+  ON m.owner_type = 'account'
+ AND m.owner_id = ah.account_id
+WHERE m.session_id = $1
+  AND m.type = 'text'
+  AND ah.enabled = TRUE
+  AND ah.status = $2
+  AND ah.notify_reply_received = TRUE
+  AND ah.account_id <> $3`, sessionID, accountHookStatusActive, sender.OwnerID)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	message := s.agentHookReplyReceivedMessage(sessionID, senderRole)
+	for rows.Next() {
+		var accountID string
+		if err := rows.Scan(&accountID); err != nil {
+			continue
+		}
+		s.notifyAccountHook(ctx, accountID, accountHookNotificationReplyReceived, message)
+	}
+}
+
 func (s *Server) accountHookDeliveryEnabled(ctx context.Context, ownerType domain.OwnerType, ownerID string) (bool, error) {
 	if ownerType != domain.OwnerAccount {
 		return true, nil
 	}
-	var enabled bool
-	err := s.db.QueryRow(ctx, `SELECT enabled FROM account_hooks WHERE account_id = $1`, ownerID).Scan(&enabled)
+	var enabled, notifyAssignmentReceived bool
+	var status string
+	err := s.db.QueryRow(ctx, `SELECT enabled, status, notify_assignment_received FROM account_hooks WHERE account_id = $1`, ownerID).Scan(&enabled, &status, &notifyAssignmentReceived)
 	if err == pgx.ErrNoRows {
 		return true, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	return enabled, nil
+	return enabled && status == accountHookStatusActive && notifyAssignmentReceived, nil
 }
 
 func (s *Server) handleAccountHookGet(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
@@ -211,8 +338,10 @@ func (s *Server) handleAccountHookPut(w http.ResponseWriter, r *http.Request, ac
 		return
 	}
 	var body struct {
-		URL       string `json:"url"`
-		AuthToken string `json:"auth_token"`
+		URL                      string `json:"url"`
+		AuthToken                string `json:"auth_token"`
+		NotifyAssignmentReceived *bool  `json:"notify_assignment_received"`
+		NotifyReplyReceived      *bool  `json:"notify_reply_received"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		respondErr(w, http.StatusBadRequest, "bad body")
@@ -234,17 +363,22 @@ func (s *Server) handleAccountHookPut(w http.ResponseWriter, r *http.Request, ac
 		return
 	}
 	enabled := true
+	notifyAssignmentReceived := true
+	notifyReplyReceived := false
 	if existing != nil {
 		enabled = existing.Enabled
+		notifyAssignmentReceived = existing.NotifyAssignmentReceived
+		notifyReplyReceived = existing.NotifyReplyReceived
+	}
+	if body.NotifyAssignmentReceived != nil {
+		notifyAssignmentReceived = *body.NotifyAssignmentReceived
+	}
+	if body.NotifyReplyReceived != nil {
+		notifyReplyReceived = *body.NotifyReplyReceived
 	}
 	authToken := normalizeHookToken(body.AuthToken)
 	if authToken == "" && existing != nil {
-		var storedToken string
-		if err := s.db.QueryRow(r.Context(), `SELECT auth_token FROM account_hooks WHERE account_id = $1`, actor.OwnerID).Scan(&storedToken); err != nil {
-			respondErr(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		authToken = storedToken
+		authToken = existing.AuthToken
 	}
 	if authToken == "" {
 		respondErr(w, http.StatusBadRequest, "hook_auth_token_required")
@@ -259,6 +393,8 @@ INSERT INTO account_hooks(
   url,
   auth_token,
   enabled,
+  notify_assignment_received,
+  notify_reply_received,
   status,
   verification_token,
   verification_requested_at,
@@ -268,12 +404,14 @@ INSERT INTO account_hooks(
   failure_reason,
   updated_at
 )
-VALUES ($1,$2,$3,$4,$5,$6,$7,now(),NULL,NULL,0,'',now())
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,now(),NULL,NULL,0,'',now())
 ON CONFLICT (account_id)
 DO UPDATE SET
   url = EXCLUDED.url,
   auth_token = EXCLUDED.auth_token,
   enabled = EXCLUDED.enabled,
+  notify_assignment_received = EXCLUDED.notify_assignment_received,
+  notify_reply_received = EXCLUDED.notify_reply_received,
   status = EXCLUDED.status,
   verification_token = EXCLUDED.verification_token,
   verification_requested_at = EXCLUDED.verification_requested_at,
@@ -287,6 +425,8 @@ DO UPDATE SET
 		normalizedURL,
 		authToken,
 		enabled,
+		notifyAssignmentReceived,
+		notifyReplyReceived,
 		accountHookStatusPending,
 		verifyToken,
 	); err != nil {

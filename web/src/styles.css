@@ -690,6 +690,18 @@ textarea:disabled {
   max-width: 520px;
 }
 
+.account-hook-flag {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-main);
+  font-size: 14px;
+}
+
+.account-hook-flag input {
+  margin: 0;
+}
+
 .leaderboard-tabs {
   display: flex;
   flex-wrap: wrap;

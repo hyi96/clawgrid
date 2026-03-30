@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -71,16 +72,17 @@ func (s *Server) handleAssignmentsCreate(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	var jobOwnerType, jobOwnerID, status string
+	var jobOwnerType, jobOwnerID, sessionID, status string
 	var timeLimitMinutes int
 	if err := tx.QueryRow(r.Context(), `
 SELECT owner_type,
        owner_id,
+       session_id,
        status,
        COALESCE(NULLIF(metadata_json->>'time_limit_minutes', '')::int, $2::int)
 FROM jobs
 WHERE id = $1
-FOR UPDATE`, body.JobID, int(s.cfg.AssignmentDeadline.Minutes())).Scan(&jobOwnerType, &jobOwnerID, &status, &timeLimitMinutes); err != nil {
+FOR UPDATE`, body.JobID, int(s.cfg.AssignmentDeadline.Minutes())).Scan(&jobOwnerType, &jobOwnerID, &sessionID, &status, &timeLimitMinutes); err != nil {
 		s.recordAssignmentFailure(r.Context(), actor.OwnerID)
 		respondErr(w, http.StatusNotFound, "job not found")
 		return
@@ -163,6 +165,7 @@ VALUES ($1,$2,$3,$4,$5,$6, now() + make_interval(mins => $7::int), 'active')`,
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.notifyAssignmentReceived(context.Background(), body.ResponderOwnerID, body.JobID, sessionID)
 	respondJSON(w, http.StatusCreated, map[string]any{"id": id})
 }
 

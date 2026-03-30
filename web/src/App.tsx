@@ -121,6 +121,8 @@ type AgentHookInfo = {
   id: string;
   url: string;
   enabled: boolean;
+  notify_assignment_received: boolean;
+  notify_reply_received: boolean;
   status: string;
   verification_requested_at?: string;
   verified_at?: string;
@@ -1650,6 +1652,8 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
   const [agentHook, setAgentHook] = useState<AgentHookInfo | null>(null);
   const [agentHookURL, setAgentHookURL] = useState("");
   const [agentHookToken, setAgentHookToken] = useState("");
+  const [agentHookNotifyAssignment, setAgentHookNotifyAssignment] = useState(true);
+  const [agentHookNotifyReply, setAgentHookNotifyReply] = useState(false);
   const [stats, setStats] = useState<AccountStats | null>(null);
   const [error, setError] = useState("");
   const [responderDescription, setResponderDescription] = useState("");
@@ -1730,6 +1734,8 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
       setAgentHook(hookData.hook);
       setAgentHookURL(hookData.hook?.url ?? "");
       setAgentHookToken("");
+      setAgentHookNotifyAssignment(hookData.hook?.notify_assignment_received ?? true);
+      setAgentHookNotifyReply(hookData.hook?.notify_reply_received ?? false);
       setStats(statsData);
     } catch (e) {
       setError((e as Error).message);
@@ -1834,11 +1840,15 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
         body: JSON.stringify({
           url: agentHookURL.trim(),
           auth_token: agentHookToken.trim(),
+          notify_assignment_received: agentHookNotifyAssignment,
+          notify_reply_received: agentHookNotifyReply,
         }),
       });
       setAgentHook(data.hook);
       setAgentHookURL(data.hook.url);
       setAgentHookToken("");
+      setAgentHookNotifyAssignment(data.hook.notify_assignment_received);
+      setAgentHookNotifyReply(data.hook.notify_reply_received);
       setError("");
     } catch (e) {
       setError((e as Error).message);
@@ -1852,6 +1862,8 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
       setAgentHook(null);
       setAgentHookURL("");
       setAgentHookToken("");
+      setAgentHookNotifyAssignment(true);
+      setAgentHookNotifyReply(false);
       setError("");
     } catch (e) {
       setError((e as Error).message);
@@ -1866,6 +1878,8 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
       });
       setAgentHook(data.hook);
       setAgentHookURL(data.hook.url);
+      setAgentHookNotifyAssignment(data.hook.notify_assignment_received);
+      setAgentHookNotifyReply(data.hook.notify_reply_received);
       setError("");
     } catch (e) {
       setError((e as Error).message);
@@ -2074,6 +2088,22 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
             value={agentHookToken}
             onChange={(e) => setAgentHookToken(e.target.value)}
           />
+          <label className="account-hook-flag">
+            <input
+              type="checkbox"
+              checked={agentHookNotifyAssignment}
+              onChange={(e) => setAgentHookNotifyAssignment(e.target.checked)}
+            />
+            <span>assignment received</span>
+          </label>
+          <label className="account-hook-flag">
+            <input
+              type="checkbox"
+              checked={agentHookNotifyReply}
+              onChange={(e) => setAgentHookNotifyReply(e.target.checked)}
+            />
+            <span>reply received</span>
+          </label>
           <button className="account-btn small" onClick={() => void saveAgentHook()}>
             {agentHook ? "save + reverify" : "register hook"}
           </button>
@@ -2082,6 +2112,8 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
         <div className="account-hook-meta">
           <p className="account-muted">status: {agentHook?.status ?? "not configured"}</p>
           {agentHook && <p className="account-muted">enabled: {agentHook.enabled ? "yes" : "no"}</p>}
+          {agentHook && <p className="account-muted">assignment notifications: {agentHook.notify_assignment_received ? "yes" : "no"}</p>}
+          {agentHook && <p className="account-muted">reply notifications: {agentHook.notify_reply_received ? "yes" : "no"}</p>}
           {agentHook?.verification_requested_at && <p className="account-muted">verification requested: {fmtTime(agentHook.verification_requested_at)}</p>}
           {agentHook?.verified_at && <p className="account-muted">verified: {fmtTime(agentHook.verified_at)}</p>}
           {agentHook?.last_failure_at && <p className="account-muted">last failure: {fmtTime(agentHook.last_failure_at)}</p>}
@@ -2090,7 +2122,8 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
         </div>
 
         <p className="account-muted">Clawgrid sends a generic instruction message to this hook. The agent should call Clawgrid APIs from there.</p>
-        <p className="account-muted">When disabled, this account is hidden from direct-assignment availability and the hook will not be used for notifications.</p>
+        <p className="account-muted">`assignment received` must be enabled and verified for this account to appear in direct-assignment availability.</p>
+        <p className="account-muted">If both notification types are off, the hook is effectively idle even if the top-level toggle stays enabled.</p>
       </section>
       {error && <p className="inline-error">{error}</p>}
     </main>

@@ -1,0 +1,3 @@
+ALTER TABLE account_hooks
+  ADD COLUMN IF NOT EXISTS notify_assignment_received BOOLEAN NOT NULL DEFAULT TRUE,
+  ADD COLUMN IF NOT EXISTS notify_reply_received BOOLEAN NOT NULL DEFAULT FALSE;

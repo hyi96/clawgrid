@@ -1362,21 +1362,28 @@ func TestAccountHookRegisterVerifyToggleAndAssignmentVisibility(t *testing.T) {
 
 	var hookResponse struct {
 		Hook struct {
-			URL     string `json:"url"`
-			Enabled bool   `json:"enabled"`
-			Status  string `json:"status"`
-			Failure string `json:"failure_reason"`
+			URL                      string `json:"url"`
+			Enabled                  bool   `json:"enabled"`
+			NotifyAssignmentReceived bool   `json:"notify_assignment_received"`
+			NotifyReplyReceived      bool   `json:"notify_reply_received"`
+			Status                   string `json:"status"`
+			Failure                  string `json:"failure_reason"`
 		} `json:"hook"`
 	}
 	h.requestJSON(t, http.MethodPut, "/account/hook", responder.apiKey, map[string]any{
-		"url":        "http://localhost:18789/hooks/agent",
-		"auth_token": "hook-secret",
+		"url":                        "http://localhost:18789/hooks/agent",
+		"auth_token":                 "hook-secret",
+		"notify_assignment_received": true,
+		"notify_reply_received":      false,
 	}, http.StatusOK, &hookResponse)
 	if hookResponse.Hook.Status != accountHookStatusPending {
 		t.Fatalf("hook status = %q, want %q", hookResponse.Hook.Status, accountHookStatusPending)
 	}
 	if !hookResponse.Hook.Enabled {
 		t.Fatal("hook should be enabled after registration")
+	}
+	if !hookResponse.Hook.NotifyAssignmentReceived || hookResponse.Hook.NotifyReplyReceived {
+		t.Fatalf("hook notification flags = %+v, want assignment=true reply=false", hookResponse.Hook)
 	}
 	if delivered.URL != "http://localhost:18789/hooks/agent" {
 		t.Fatalf("delivery url = %q, want %q", delivered.URL, "http://localhost:18789/hooks/agent")
@@ -1388,9 +1395,6 @@ func TestAccountHookRegisterVerifyToggleAndAssignmentVisibility(t *testing.T) {
 		t.Fatalf("delivery message = %q, want verification callback url", delivered.Message)
 	}
 
-	verifyToken := h.scalarString(t, `SELECT verification_token FROM account_hooks WHERE account_id = $1`, responder.accountID)
-	h.requestJSON(t, http.MethodPost, "/agent-hooks/verify/"+verifyToken, "", nil, http.StatusOK, nil)
-
 	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
 
 	var available struct {
@@ -1398,6 +1402,14 @@ func TestAccountHookRegisterVerifyToggleAndAssignmentVisibility(t *testing.T) {
 			OwnerID string `json:"owner_id"`
 		} `json:"items"`
 	}
+	h.requestJSON(t, http.MethodGet, "/responders/available", "", nil, http.StatusOK, &available)
+	if len(available.Items) != 0 {
+		t.Fatalf("available responders before verify = %+v, want empty", available.Items)
+	}
+
+	verifyToken := h.scalarString(t, `SELECT verification_token FROM account_hooks WHERE account_id = $1`, responder.accountID)
+	h.requestJSON(t, http.MethodPost, "/agent-hooks/verify/"+verifyToken, "", nil, http.StatusOK, nil)
+
 	h.requestJSON(t, http.MethodGet, "/responders/available", "", nil, http.StatusOK, &available)
 	if len(available.Items) != 1 || available.Items[0].OwnerID != responder.accountID {
 		t.Fatalf("available responders = %+v, want responder present", available.Items)
@@ -1429,6 +1441,36 @@ func TestAccountHookRegisterVerifyToggleAndAssignmentVisibility(t *testing.T) {
 	if len(available.Items) != 1 || available.Items[0].OwnerID != responder.accountID {
 		t.Fatalf("available responders after enable = %+v, want responder present", available.Items)
 	}
+
+	h.requestJSON(t, http.MethodPut, "/account/hook", responder.apiKey, map[string]any{
+		"url":                        "http://localhost:18789/hooks/agent",
+		"auth_token":                 "",
+		"notify_assignment_received": false,
+		"notify_reply_received":      true,
+	}, http.StatusOK, &hookResponse)
+	if hookResponse.Hook.NotifyAssignmentReceived || !hookResponse.Hook.NotifyReplyReceived {
+		t.Fatalf("hook notification flags after update = %+v, want assignment=false reply=true", hookResponse.Hook)
+	}
+
+	h.requestJSON(t, http.MethodGet, "/responders/available", "", nil, http.StatusOK, &available)
+	if len(available.Items) != 0 {
+		t.Fatalf("available responders while reverify pending = %+v, want empty", available.Items)
+	}
+
+	verifyToken = h.scalarString(t, `SELECT verification_token FROM account_hooks WHERE account_id = $1`, responder.accountID)
+	h.requestJSON(t, http.MethodPost, "/agent-hooks/verify/"+verifyToken, "", nil, http.StatusOK, nil)
+
+	h.requestJSON(t, http.MethodGet, "/responders/available", "", nil, http.StatusOK, &available)
+	if len(available.Items) != 0 {
+		t.Fatalf("available responders with assignment notifications off = %+v, want empty", available.Items)
+	}
+
+	sessionID = h.createSession(t, prompter.apiKey)
+	jobID = h.postMessage(t, prompter.apiKey, sessionID, "assign me if you can")
+	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
+		"job_id":             jobID,
+		"responder_owner_id": responder.accountID,
+	}, http.StatusConflict, nil)
 }
 
 func TestAccountHookUpdateKeepsExistingBearerToken(t *testing.T) {
@@ -1444,8 +1486,10 @@ func TestAccountHookUpdateKeepsExistingBearerToken(t *testing.T) {
 	}
 
 	h.requestJSON(t, http.MethodPut, "/account/hook", account.apiKey, map[string]any{
-		"url":        "http://localhost:18789/hooks/agent",
-		"auth_token": "hook-secret",
+		"url":                        "http://localhost:18789/hooks/agent",
+		"auth_token":                 "hook-secret",
+		"notify_assignment_received": false,
+		"notify_reply_received":      true,
 	}, http.StatusOK, nil)
 
 	h.requestJSON(t, http.MethodPut, "/account/hook", account.apiKey, map[string]any{
@@ -1458,6 +1502,83 @@ func TestAccountHookUpdateKeepsExistingBearerToken(t *testing.T) {
 	}
 	if deliveries[1].AuthToken != "hook-secret" {
 		t.Fatalf("second delivery auth token = %q, want %q", deliveries[1].AuthToken, "hook-secret")
+	}
+	var notifyAssignment, notifyReply bool
+	if err := h.appPool.QueryRow(context.Background(), `SELECT notify_assignment_received, notify_reply_received FROM account_hooks WHERE account_id = $1`, account.accountID).Scan(&notifyAssignment, &notifyReply); err != nil {
+		t.Fatalf("load hook notification flags failed: %v", err)
+	}
+	if notifyAssignment || !notifyReply {
+		t.Fatalf("stored hook flags = assignment:%v reply:%v, want assignment:false reply:true", notifyAssignment, notifyReply)
+	}
+}
+
+func TestAccountHookDeliversAssignmentAndReplyNotifications(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+	prompter := h.registerAccount(t, "tom")
+	dispatcher := h.registerAccount(t, "dora")
+	responder := h.registerAccount(t, "noah")
+
+	deliveries := []agentHookDelivery{}
+	h.app.deliverAgentHook = func(_ context.Context, delivery agentHookDelivery) error {
+		deliveries = append(deliveries, delivery)
+		return nil
+	}
+
+	h.requestJSON(t, http.MethodPut, "/account/hook", prompter.apiKey, map[string]any{
+		"url":                        "http://localhost:18789/hooks/prompter",
+		"auth_token":                 "prompter-secret",
+		"notify_assignment_received": false,
+		"notify_reply_received":      true,
+	}, http.StatusOK, nil)
+	prompterVerifyToken := h.scalarString(t, `SELECT verification_token FROM account_hooks WHERE account_id = $1`, prompter.accountID)
+	h.requestJSON(t, http.MethodPost, "/agent-hooks/verify/"+prompterVerifyToken, "", nil, http.StatusOK, nil)
+
+	h.requestJSON(t, http.MethodPut, "/account/hook", responder.apiKey, map[string]any{
+		"url":                        "http://localhost:18789/hooks/responder",
+		"auth_token":                 "responder-secret",
+		"notify_assignment_received": true,
+		"notify_reply_received":      false,
+	}, http.StatusOK, nil)
+	responderVerifyToken := h.scalarString(t, `SELECT verification_token FROM account_hooks WHERE account_id = $1`, responder.accountID)
+	h.requestJSON(t, http.MethodPost, "/agent-hooks/verify/"+responderVerifyToken, "", nil, http.StatusOK, nil)
+
+	deliveries = nil
+
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "please take this assignment")
+
+	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
+		"job_id":             jobID,
+		"responder_owner_id": responder.accountID,
+	}, http.StatusCreated, nil)
+
+	if len(deliveries) != 1 {
+		t.Fatalf("assignment delivery count = %d, want 1", len(deliveries))
+	}
+	if deliveries[0].URL != "http://localhost:18789/hooks/responder" {
+		t.Fatalf("assignment delivery url = %q, want responder hook", deliveries[0].URL)
+	}
+	if !strings.Contains(deliveries[0].Message, "/jobs/"+jobID) || !strings.Contains(deliveries[0].Message, "/sessions/"+sessionID+"/messages") {
+		t.Fatalf("assignment delivery message = %q, want job and session urls", deliveries[0].Message)
+	}
+
+	deliveries = nil
+
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/reply", responder.apiKey, map[string]any{
+		"content": "done",
+	}, http.StatusOK, nil)
+
+	if len(deliveries) != 1 {
+		t.Fatalf("reply delivery count = %d, want 1", len(deliveries))
+	}
+	if deliveries[0].URL != "http://localhost:18789/hooks/prompter" {
+		t.Fatalf("reply delivery url = %q, want prompter hook", deliveries[0].URL)
+	}
+	if !strings.Contains(deliveries[0].Message, "new responder message") || !strings.Contains(deliveries[0].Message, "/sessions/"+sessionID+"/messages") {
+		t.Fatalf("reply delivery message = %q, want responder session notification", deliveries[0].Message)
 	}
 }
 

@@ -67,7 +67,11 @@ WHERE ra.owner_type = 'account'
     SELECT 1
     FROM account_hooks ah
     WHERE ah.account_id = ra.owner_id
-      AND ah.enabled = FALSE
+      AND (
+        ah.enabled = FALSE
+        OR ah.status <> 'active'
+        OR ah.notify_assignment_received = FALSE
+      )
   )
 ORDER BY ra.last_seen_at DESC
 LIMIT $5`, int(s.cfg.ResponderActiveWindow.Seconds()), string(actor.OwnerType), actor.OwnerID, int(s.cfg.PollAssignmentWait.Seconds()), bandSize)

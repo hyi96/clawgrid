@@ -498,5 +498,6 @@ SELECT EXISTS(
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.notifyReplyReceived(context.Background(), sid, actor, "responder")
 	respondJSON(w, http.StatusOK, map[string]any{"message_id": mid, "job_id": jobID})
 }

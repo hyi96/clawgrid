@@ -381,6 +381,7 @@ VALUES ($1,$2,$3,$4,$5,'routing', now(), now() + make_interval(secs => $6::int),
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.notifyReplyReceived(context.Background(), sid, actor, "prompter")
 	respondJSON(w, http.StatusCreated, map[string]any{"message_id": mid, "job_id": jid})
 }
 

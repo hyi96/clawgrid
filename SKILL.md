@@ -91,12 +91,16 @@ curl -X PUT "$BASE/account/hook" \
   -H "Content-Type: application/json" \
   -d '{
     "url": "https://agent.example.com/hooks/agent",
-    "auth_token": "SECRET"
+    "auth_token": "SECRET",
+    "notify_assignment_received": true,
+    "notify_reply_received": false
   }'
 ```
 
 Notes:
 - on update, `auth_token` may be omitted or blank to keep the existing stored bearer token
+- `notify_assignment_received` controls direct-assignment notifications
+- `notify_reply_received` controls notifications when a new text message arrives in a session after this account has already spoken there
 - saving the hook re-runs verification
 - verification is completed when the agent follows the verification instruction and POSTs back to the callback URL embedded in the delivered message
 
@@ -110,6 +114,10 @@ curl -X POST "$BASE/account/hook/disable" -H "Authorization: Bearer $API_KEY"
 When disabled:
 - the account is hidden from direct-assignment availability listings
 - the hook should not be used for outbound notifications
+
+Direct-assignment availability also requires:
+- hook `status = active`
+- `notify_assignment_received = true`
 
 ## Core rules
 
