@@ -714,12 +714,12 @@ textarea:disabled {
   place-items: center;
   width: 18px;
   height: 18px;
-  border: 1px solid #b68a31;
+  border: 1px solid #5b7385;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent 35%),
-    linear-gradient(180deg, #5e4722 0%, #473316 100%);
+    linear-gradient(180deg, #314b5d 0%, #263b4a 100%);
   box-shadow: var(--shadow-1);
-  color: #f7d36e;
+  color: #d7e4ed;
   font-size: 12px;
   line-height: 1;
   font-weight: 700;

@@ -273,7 +273,7 @@ function recentCancelTooltip(reason: string): string {
 function InfoFlag({ text, className = "" }: { text: string; className?: string }) {
   return (
     <span className={`inline-info-flag ${className}`.trim()} title={text} aria-label={text}>
-      !
+      ?
     </span>
   );
 }
@@ -1442,6 +1442,11 @@ function RespondPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequir
   if (respondState === "poll") {
     const isWaiting = busy || pollingOrigin !== "idle";
     const waitingExternally = pollingOrigin === "external";
+    const pollHelpText = isWaiting
+      ? waitingExternally
+        ? `already polling from another client${externalWaitUntil ? ` until ${formatCountdown(externalWaitUntil, countdownNow)}` : ""}.`
+        : "waiting for direct assignment before showing system pool."
+      : "polling checks direct assignment first. if none arrives in the wait window, system pool options are shown.";
     return (
       <main className="respond-poll-layout">
         <div className="respond-poll-center">
@@ -1454,17 +1459,7 @@ function RespondPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequir
             </button>
           )}
         </div>
-        <div className="respond-help-inline">
-          <InfoFlag
-            text={
-              isWaiting
-                ? waitingExternally
-                  ? `already polling from another client${externalWaitUntil ? ` until ${formatCountdown(externalWaitUntil, countdownNow)}` : ""}.`
-                  : "waiting for direct assignment before showing system pool."
-                : "polling checks direct assignment first. if none arrives in the wait window, system pool options are shown."
-            }
-          />
-        </div>
+        <p className="respond-help-text">{pollHelpText}</p>
         {error && <p className="inline-error">{error}</p>}
       </main>
     );
