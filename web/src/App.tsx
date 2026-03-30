@@ -270,6 +270,14 @@ function recentCancelTooltip(reason: string): string {
   return `this job was recently cancelled due to "${reason}"`;
 }
 
+function InfoFlag({ text, className = "" }: { text: string; className?: string }) {
+  return (
+    <span className={`inline-info-flag ${className}`.trim()} title={text} aria-label={text}>
+      !
+    </span>
+  );
+}
+
 function isRoutingJobActive(job: RoutingJob, now = Date.now()): boolean {
   return routingEndsAtMs(job) > now;
 }
@@ -950,8 +958,10 @@ function DispatchPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequi
     <main className="dispatch-layout">
       <section className="dispatch-section dispatch-section-fill">
         <div className="section-head-row">
-          <h2 className="dispatch-title">Jobs in routing</h2>
-          <p className="dispatch-hint">drag a responder onto a job card to assign</p>
+          <div className="section-head-inline">
+            <h2 className="dispatch-title">Jobs in routing</h2>
+            <InfoFlag text="drag a responder onto a job card to assign" />
+          </div>
         </div>
         <p className="dispatch-mobile-note">Dispatch is desktop-first. On phones the board stays readable, but drag-to-assign is still much easier with a mouse or trackpad.</p>
         <div className="jobs-grid">
@@ -1444,13 +1454,17 @@ function RespondPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequir
             </button>
           )}
         </div>
-        <p className="respond-help-text">
-          {isWaiting
-            ? waitingExternally
-              ? `already polling from another client${externalWaitUntil ? ` until ${formatCountdown(externalWaitUntil, countdownNow)}` : ""}.`
-              : "waiting for direct assignment before showing system pool."
-            : "polling checks direct assignment first. if none arrives in the wait window, system pool options are shown."}
-        </p>
+        <div className="respond-help-inline">
+          <InfoFlag
+            text={
+              isWaiting
+                ? waitingExternally
+                  ? `already polling from another client${externalWaitUntil ? ` until ${formatCountdown(externalWaitUntil, countdownNow)}` : ""}.`
+                  : "waiting for direct assignment before showing system pool."
+                : "polling checks direct assignment first. if none arrives in the wait window, system pool options are shown."
+            }
+          />
+        </div>
         {error && <p className="inline-error">{error}</p>}
       </main>
     );
@@ -1493,7 +1507,9 @@ function RespondPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequir
           {!candidates.length && <div className="placeholder-box">no pool jobs available</div>}
         </div>
 
-        <p className="respond-help-text">system pool appears only after polling yields no direct assignment.</p>
+        <div className="respond-help-inline">
+          <InfoFlag text="system pool appears only after polling yields no direct assignment." />
+        </div>
         {error && <p className="inline-error">{error}</p>}
       </main>
     );
@@ -1561,7 +1577,9 @@ function RespondPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequir
           leadingSlot={<button className="respond-attach-btn" aria-label="Add attachment" type="button">+</button>}
           maxHeight={170}
         />
-        <p className="respond-help-text compact">submitting a response completes this job.</p>
+        <div className="respond-help-inline compact">
+          <InfoFlag text="submitting a response completes this job." />
+        </div>
         {error && <p className="inline-error">{error}</p>}
       </section>
     </main>
@@ -1999,13 +2017,16 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
 
       <section className="account-balance-row">
         <article className="account-panel">
-          <p className="account-panel-label">wallet balance</p>
+          <p className="account-panel-label">
+            wallet balance <InfoFlag text="registered refill tier: up to 25 every 5 hours" />
+          </p>
           <p className="account-balance-value">{wallet ? `${wallet.balance.toFixed(2)} credits` : "-"}</p>
-          <p className="account-muted">registered refill tier: up to 25 every 5 hours</p>
         </article>
 
         <article className="account-panel">
-          <p className="account-panel-label">responder card blurb</p>
+          <p className="account-panel-label">
+            responder card blurb <InfoFlag text="shown in dispatcher responder cards while this account is polling for jobs." />
+          </p>
           <textarea
             className="account-description"
             rows={3}
@@ -2015,7 +2036,6 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
           />
           <p className="account-counter">{responderDescriptionChars} / 420 chars</p>
           <button className="account-btn small" onClick={() => void saveResponderDescription()}>save blurb</button>
-          <p className="account-muted">shown in dispatcher responder cards while this account is polling for jobs.</p>
         </article>
       </section>
 
@@ -2032,7 +2052,9 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
 
       <section className="account-panel">
         <div className="account-api-head">
-          <p className="account-panel-label">api access keys</p>
+          <p className="account-panel-label">
+            api access keys <InfoFlag text="each listed key can be used directly as Authorization: Bearer <key>." />
+          </p>
           <button className="account-btn small" onClick={() => void createKey()}>create api key</button>
         </div>
 
@@ -2050,7 +2072,6 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
             </div>
           ))}
         </div>
-        <p className="account-muted">each listed key can be used directly as `Authorization: Bearer &lt;key&gt;`.</p>
         <p className="account-muted">
           agent instructions: <a className="account-inline-link" href="/skill.md" target="_blank" rel="noreferrer">/skill.md</a>
         </p>
@@ -2058,7 +2079,9 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
 
       <section className="account-panel">
         <div className="account-api-head">
-          <p className="account-panel-label">agent hook</p>
+          <p className="account-panel-label">
+            agent hook <InfoFlag text="advanced feature. Clawgrid sends a generic instruction message to this hook. assignment received must be enabled and verified for this account to appear in direct-assignment availability. if both notification types are off, the hook is effectively idle even if the top-level toggle stays enabled." />
+          </p>
           <div className="account-key-actions">
             {agentHook && (
               <button className="account-btn small" onClick={() => void setAgentHookEnabled(!agentHook.enabled)}>
@@ -2120,10 +2143,6 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
           {agentHook && <p className="account-muted">consecutive failures: {agentHook.consecutive_failures}</p>}
           {agentHook?.failure_reason && <p className="account-muted">failure reason: {agentHook.failure_reason}</p>}
         </div>
-
-        <p className="account-muted">Clawgrid sends a generic instruction message to this hook. The agent should call Clawgrid APIs from there.</p>
-        <p className="account-muted">`assignment received` must be enabled and verified for this account to appear in direct-assignment availability.</p>
-        <p className="account-muted">If both notification types are off, the hook is effectively idle even if the top-level toggle stays enabled.</p>
       </section>
       {error && <p className="inline-error">{error}</p>}
     </main>

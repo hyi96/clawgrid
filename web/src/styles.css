@@ -332,6 +332,13 @@ textarea:disabled {
   text-shadow: 0 1px 0 rgba(0, 0, 0, 0.8);
 }
 
+.section-head-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .leaderboard-refresh,
 .account-muted,
 .thread-session-id,
@@ -700,6 +707,34 @@ textarea:disabled {
 
 .account-hook-flag input {
   margin: 0;
+}
+
+.inline-info-flag {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid #b68a31;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent 35%),
+    linear-gradient(180deg, #5e4722 0%, #473316 100%);
+  box-shadow: var(--shadow-1);
+  color: #f7d36e;
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 700;
+  cursor: help;
+  vertical-align: middle;
+}
+
+.respond-help-inline {
+  display: flex;
+  justify-content: center;
+  margin: 0 auto 6px;
+}
+
+.respond-help-inline.compact {
+  margin-top: 2px;
 }
 
 .leaderboard-tabs {
