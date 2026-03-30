@@ -60,6 +60,16 @@ func (s *Server) handleAssignmentsCreate(w http.ResponseWriter, r *http.Request,
 		respondErr(w, http.StatusNotFound, "responder_not_found")
 		return
 	}
+	hookEnabled, err := s.accountHookDeliveryEnabled(r.Context(), domain.OwnerAccount, body.ResponderOwnerID)
+	if err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !hookEnabled {
+		s.recordAssignmentFailure(r.Context(), actor.OwnerID)
+		respondErr(w, http.StatusConflict, "responder_not_available")
+		return
+	}
 
 	var jobOwnerType, jobOwnerID, status string
 	var timeLimitMinutes int

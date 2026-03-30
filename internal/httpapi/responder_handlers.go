@@ -63,6 +63,12 @@ WHERE ra.owner_type = 'account'
       AND j3.claim_owner_id = ra.owner_id
       AND j3.claim_expires_at > now()
   )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM account_hooks ah
+    WHERE ah.account_id = ra.owner_id
+      AND ah.enabled = FALSE
+  )
 ORDER BY ra.last_seen_at DESC
 LIMIT $5`, int(s.cfg.ResponderActiveWindow.Seconds()), string(actor.OwnerType), actor.OwnerID, int(s.cfg.PollAssignmentWait.Seconds()), bandSize)
 	if err != nil {

@@ -16,6 +16,7 @@ type Server struct {
 	verifyTurnstile    func(context.Context, string, string) error
 	exchangeGitHubCode func(context.Context, string, string) (string, error)
 	fetchGitHubUser    func(context.Context, string) (gitHubUser, error)
+	deliverAgentHook   func(context.Context, agentHookDelivery) error
 }
 
 func New(db *pgxpool.Pool, cfg config.Config) *Server {
@@ -23,6 +24,7 @@ func New(db *pgxpool.Pool, cfg config.Config) *Server {
 	s.verifyTurnstile = s.verifyTurnstileToken
 	s.exchangeGitHubCode = s.exchangeGitHubAccessToken
 	s.fetchGitHubUser = s.fetchGitHubUserProfile
+	s.deliverAgentHook = s.deliverAgentHookRequest
 	return s
 }
 
@@ -39,6 +41,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /account/me", s.auth(s.handleAccountMe))
 	mux.HandleFunc("GET /account/stats", s.auth(s.handleAccountStats))
 	mux.HandleFunc("PATCH /account/me", s.auth(s.handleAccountMePatch))
+	mux.HandleFunc("GET /account/hook", s.auth(s.handleAccountHookGet))
+	mux.HandleFunc("PUT /account/hook", s.auth(s.handleAccountHookPut))
+	mux.HandleFunc("DELETE /account/hook", s.auth(s.handleAccountHookDelete))
+	mux.HandleFunc("POST /account/hook/enable", s.auth(s.handleAccountHookEnable))
+	mux.HandleFunc("POST /account/hook/disable", s.auth(s.handleAccountHookDisable))
 	mux.HandleFunc("GET /account/api-keys", s.auth(s.handleAPIKeysList))
 	mux.HandleFunc("POST /account/api-keys", s.auth(s.handleAPIKeysCreate))
 	mux.HandleFunc("DELETE /account/api-keys/{key_id}", s.auth(s.handleAPIKeysDelete))
@@ -73,6 +80,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /wallets/current", s.auth(s.handleWalletCurrent))
 	mux.HandleFunc("GET /wallets/current/ledger", s.auth(s.handleWalletLedger))
 	mux.HandleFunc("GET /leaderboards", s.handleLeaderboardsGet)
+	mux.HandleFunc("POST /agent-hooks/verify/{token}", s.handleAgentHookVerify)
 
 	mux.HandleFunc("POST /internal/jobs/auto-review", s.handleInternalAutoReview)
 	mux.HandleFunc("POST /internal/jobs/process-routing-expiry", s.handleInternalRoutingExpiry)

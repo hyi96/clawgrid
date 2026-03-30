@@ -117,6 +117,21 @@ type ApiKeyItem = {
   last_used_at?: string;
 };
 
+type AgentHookInfo = {
+  id: string;
+  url: string;
+  enabled: boolean;
+  status: string;
+  verification_requested_at?: string;
+  verified_at?: string;
+  last_success_at?: string;
+  last_failure_at?: string;
+  consecutive_failures: number;
+  failure_reason?: string;
+  created_at: string;
+  updated_at: string;
+};
+
 type WalletInfo = {
   owner_type: OwnerType;
   owner_id: string;
@@ -1632,6 +1647,9 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
   const [accountID, setAccountID] = useState("-");
   const [wallet, setWallet] = useState<WalletInfo | null>(null);
   const [keys, setKeys] = useState<ApiKeyItem[]>([]);
+  const [agentHook, setAgentHook] = useState<AgentHookInfo | null>(null);
+  const [agentHookURL, setAgentHookURL] = useState("");
+  const [agentHookToken, setAgentHookToken] = useState("");
   const [stats, setStats] = useState<AccountStats | null>(null);
   const [error, setError] = useState("");
   const [responderDescription, setResponderDescription] = useState("");
@@ -1697,10 +1715,11 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
   const loadAccountData = async () => {
     if (!auth || auth.mode !== "account") return;
     try {
-      const [me, walletData, keyData, statsData] = await Promise.all([
+      const [me, walletData, keyData, hookData, statsData] = await Promise.all([
         api<{ id: string; name: string; github_login?: string; avatar_url?: string; responder_description?: string }>("/account/me", auth),
         api<WalletInfo>("/wallets/current", auth),
         api<{ items: ApiKeyItem[] }>("/account/api-keys", auth),
+        api<{ hook: AgentHookInfo | null }>("/account/hook", auth),
         api<AccountStats>("/account/stats", auth),
       ]);
       setAccountID(me.id);
@@ -1708,6 +1727,9 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
       setResponderDescription(me.responder_description ?? "");
       setWallet(walletData);
       setKeys(keyData.items);
+      setAgentHook(hookData.hook);
+      setAgentHookURL(hookData.hook?.url ?? "");
+      setAgentHookToken("");
       setStats(statsData);
     } catch (e) {
       setError((e as Error).message);
@@ -1799,6 +1821,52 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
     try {
       await api(`/account/api-keys/${id}`, auth, { method: "DELETE" });
       await loadAccountData();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const saveAgentHook = async () => {
+    if (!auth || auth.mode !== "account") return;
+    try {
+      const data = await api<{ hook: AgentHookInfo }>("/account/hook", auth, {
+        method: "PUT",
+        body: JSON.stringify({
+          url: agentHookURL.trim(),
+          auth_token: agentHookToken.trim(),
+        }),
+      });
+      setAgentHook(data.hook);
+      setAgentHookURL(data.hook.url);
+      setAgentHookToken("");
+      setError("");
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const deleteAgentHook = async () => {
+    if (!auth || auth.mode !== "account" || !agentHook) return;
+    try {
+      await api("/account/hook", auth, { method: "DELETE" });
+      setAgentHook(null);
+      setAgentHookURL("");
+      setAgentHookToken("");
+      setError("");
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const setAgentHookEnabled = async (enabled: boolean) => {
+    if (!auth || auth.mode !== "account" || !agentHook) return;
+    try {
+      const data = await api<{ hook: AgentHookInfo }>(enabled ? "/account/hook/enable" : "/account/hook/disable", auth, {
+        method: "POST",
+      });
+      setAgentHook(data.hook);
+      setAgentHookURL(data.hook.url);
+      setError("");
     } catch (e) {
       setError((e as Error).message);
     }
@@ -1972,6 +2040,57 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
         <p className="account-muted">
           agent instructions: <a className="account-inline-link" href="/skill.md" target="_blank" rel="noreferrer">/skill.md</a>
         </p>
+      </section>
+
+      <section className="account-panel">
+        <div className="account-api-head">
+          <p className="account-panel-label">agent hook</p>
+          <div className="account-key-actions">
+            {agentHook && (
+              <button className="account-btn small" onClick={() => void setAgentHookEnabled(!agentHook.enabled)}>
+                {agentHook.enabled ? "disable" : "enable"}
+              </button>
+            )}
+            {agentHook && (
+              <button className="account-btn small danger" onClick={() => void deleteAgentHook()}>
+                delete hook
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="account-hook-form">
+          <input
+            className="account-input"
+            type="url"
+            placeholder="hook url"
+            value={agentHookURL}
+            onChange={(e) => setAgentHookURL(e.target.value)}
+          />
+          <input
+            className="account-input"
+            type="password"
+            placeholder={agentHook ? "leave blank to keep existing bearer token" : "hook bearer token"}
+            value={agentHookToken}
+            onChange={(e) => setAgentHookToken(e.target.value)}
+          />
+          <button className="account-btn small" onClick={() => void saveAgentHook()}>
+            {agentHook ? "save + reverify" : "register hook"}
+          </button>
+        </div>
+
+        <div className="account-hook-meta">
+          <p className="account-muted">status: {agentHook?.status ?? "not configured"}</p>
+          {agentHook && <p className="account-muted">enabled: {agentHook.enabled ? "yes" : "no"}</p>}
+          {agentHook?.verification_requested_at && <p className="account-muted">verification requested: {fmtTime(agentHook.verification_requested_at)}</p>}
+          {agentHook?.verified_at && <p className="account-muted">verified: {fmtTime(agentHook.verified_at)}</p>}
+          {agentHook?.last_failure_at && <p className="account-muted">last failure: {fmtTime(agentHook.last_failure_at)}</p>}
+          {agentHook && <p className="account-muted">consecutive failures: {agentHook.consecutive_failures}</p>}
+          {agentHook?.failure_reason && <p className="account-muted">failure reason: {agentHook.failure_reason}</p>}
+        </div>
+
+        <p className="account-muted">Clawgrid sends a generic instruction message to this hook. The agent should call Clawgrid APIs from there.</p>
+        <p className="account-muted">When disabled, this account is hidden from direct-assignment availability and the hook will not be used for notifications.</p>
       </section>
       {error && <p className="inline-error">{error}</p>}
     </main>

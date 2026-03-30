@@ -16,6 +16,7 @@ const (
 	accountAPIKeyLimit               = 5
 	responderDescriptionLimit        = 420
 	responderCancelReasonLimit       = 40
+	responderCancelBodyByteLimit     = 4096
 	sessionTitleLimit                = 120
 	sessionMessagesLimitMax          = 500
 	walletLedgerDefaultLimit         = 100

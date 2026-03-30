@@ -476,6 +476,7 @@ textarea:disabled {
 }
 
 .account-description,
+.account-input,
 .time-limit-custom,
 .thread-input,
 .respond-composer-input {
@@ -491,6 +492,11 @@ textarea:disabled {
 .account-description {
   padding: 9px 10px;
   resize: vertical;
+  font-size: 15px;
+}
+
+.account-input {
+  padding: 9px 10px;
   font-size: 15px;
 }
 
@@ -670,6 +676,18 @@ textarea:disabled {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+.account-hook-form,
+.account-hook-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.account-hook-form {
+  margin-bottom: 10px;
+  max-width: 520px;
 }
 
 .leaderboard-tabs {
@@ -1065,6 +1083,7 @@ textarea:disabled {
 
 .respond-composer-input:focus,
 .thread-input:focus,
+.account-input:focus,
 .account-description:focus,
 .time-limit-custom:focus {
   outline: 1px solid #7592a6;

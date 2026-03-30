@@ -176,7 +176,7 @@ func normalizeResponderCancelReason(reason string) (string, string) {
 		return "", "reason required"
 	}
 	if utf8.RuneCountInString(normalized) > responderCancelReasonLimit {
-		return "", "reason_too_long"
+		normalized = string([]rune(normalized)[:responderCancelReasonLimit])
 	}
 	return normalized, ""
 }
@@ -203,6 +203,7 @@ func (s *Server) handleResponderJobCancel(w http.ResponseWriter, r *http.Request
 	var body struct {
 		Reason string `json:"reason"`
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, responderCancelBodyByteLimit)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		respondErr(w, http.StatusBadRequest, "bad body")
 		return

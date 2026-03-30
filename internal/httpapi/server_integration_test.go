@@ -1346,6 +1346,121 @@ func TestAccountAPIKeyLimitIsCappedAtFiveActiveKeys(t *testing.T) {
 	}, http.StatusCreated, nil)
 }
 
+func TestAccountHookRegisterVerifyToggleAndAssignmentVisibility(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+	prompter := h.registerAccount(t, "tom")
+	dispatcher := h.registerAccount(t, "dora")
+	responder := h.registerAccount(t, "noah")
+
+	var delivered agentHookDelivery
+	h.app.deliverAgentHook = func(_ context.Context, delivery agentHookDelivery) error {
+		delivered = delivery
+		return nil
+	}
+
+	var hookResponse struct {
+		Hook struct {
+			URL     string `json:"url"`
+			Enabled bool   `json:"enabled"`
+			Status  string `json:"status"`
+			Failure string `json:"failure_reason"`
+		} `json:"hook"`
+	}
+	h.requestJSON(t, http.MethodPut, "/account/hook", responder.apiKey, map[string]any{
+		"url":        "http://localhost:18789/hooks/agent",
+		"auth_token": "hook-secret",
+	}, http.StatusOK, &hookResponse)
+	if hookResponse.Hook.Status != accountHookStatusPending {
+		t.Fatalf("hook status = %q, want %q", hookResponse.Hook.Status, accountHookStatusPending)
+	}
+	if !hookResponse.Hook.Enabled {
+		t.Fatal("hook should be enabled after registration")
+	}
+	if delivered.URL != "http://localhost:18789/hooks/agent" {
+		t.Fatalf("delivery url = %q, want %q", delivered.URL, "http://localhost:18789/hooks/agent")
+	}
+	if delivered.AuthToken != "hook-secret" {
+		t.Fatalf("delivery auth token = %q, want %q", delivered.AuthToken, "hook-secret")
+	}
+	if !strings.Contains(delivered.Message, "/agent-hooks/verify/") {
+		t.Fatalf("delivery message = %q, want verification callback url", delivered.Message)
+	}
+
+	verifyToken := h.scalarString(t, `SELECT verification_token FROM account_hooks WHERE account_id = $1`, responder.accountID)
+	h.requestJSON(t, http.MethodPost, "/agent-hooks/verify/"+verifyToken, "", nil, http.StatusOK, nil)
+
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
+
+	var available struct {
+		Items []struct {
+			OwnerID string `json:"owner_id"`
+		} `json:"items"`
+	}
+	h.requestJSON(t, http.MethodGet, "/responders/available", "", nil, http.StatusOK, &available)
+	if len(available.Items) != 1 || available.Items[0].OwnerID != responder.accountID {
+		t.Fatalf("available responders = %+v, want responder present", available.Items)
+	}
+
+	h.requestJSON(t, http.MethodPost, "/account/hook/disable", responder.apiKey, nil, http.StatusOK, &hookResponse)
+	if hookResponse.Hook.Enabled {
+		t.Fatal("hook should be disabled")
+	}
+
+	h.requestJSON(t, http.MethodGet, "/responders/available", "", nil, http.StatusOK, &available)
+	if len(available.Items) != 0 {
+		t.Fatalf("available responders after disable = %+v, want empty", available.Items)
+	}
+
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "assign me if you can")
+	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
+		"job_id":             jobID,
+		"responder_owner_id": responder.accountID,
+	}, http.StatusConflict, nil)
+
+	h.requestJSON(t, http.MethodPost, "/account/hook/enable", responder.apiKey, nil, http.StatusOK, &hookResponse)
+	if !hookResponse.Hook.Enabled {
+		t.Fatal("hook should be enabled again")
+	}
+
+	h.requestJSON(t, http.MethodGet, "/responders/available", "", nil, http.StatusOK, &available)
+	if len(available.Items) != 1 || available.Items[0].OwnerID != responder.accountID {
+		t.Fatalf("available responders after enable = %+v, want responder present", available.Items)
+	}
+}
+
+func TestAccountHookUpdateKeepsExistingBearerToken(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+	account := h.registerAccount(t, "noah")
+
+	deliveries := []agentHookDelivery{}
+	h.app.deliverAgentHook = func(_ context.Context, delivery agentHookDelivery) error {
+		deliveries = append(deliveries, delivery)
+		return nil
+	}
+
+	h.requestJSON(t, http.MethodPut, "/account/hook", account.apiKey, map[string]any{
+		"url":        "http://localhost:18789/hooks/agent",
+		"auth_token": "hook-secret",
+	}, http.StatusOK, nil)
+
+	h.requestJSON(t, http.MethodPut, "/account/hook", account.apiKey, map[string]any{
+		"url":        "http://localhost:18789/hooks/agent",
+		"auth_token": "",
+	}, http.StatusOK, nil)
+
+	if len(deliveries) != 2 {
+		t.Fatalf("delivery count = %d, want 2", len(deliveries))
+	}
+	if deliveries[1].AuthToken != "hook-secret" {
+		t.Fatalf("second delivery auth token = %q, want %q", deliveries[1].AuthToken, "hook-secret")
+	}
+}
+
 func TestLeaderboardsReturnRealSnapshotData(t *testing.T) {
 	t.Parallel()
 
@@ -2102,7 +2217,7 @@ func TestResponderCancelsAssignedJobRefundsResponderStakeAndPartiallyRefundsDisp
 	}
 }
 
-func TestResponderJobCancelRequiresShortReason(t *testing.T) {
+func TestResponderJobCancelRequiresReasonAndTruncatesLongReason(t *testing.T) {
 	t.Parallel()
 
 	h := newIntegrationHarness(t)
@@ -2114,7 +2229,33 @@ func TestResponderJobCancelRequiresShortReason(t *testing.T) {
 
 	h.requestJSON(t, http.MethodPost, "/jobs/job_missing/responder-cancel", responder.apiKey, map[string]any{
 		"reason": strings.Repeat("x", responderCancelReasonLimit+1),
-	}, http.StatusBadRequest, nil)
+	}, http.StatusNotFound, nil)
+}
+
+func TestResponderJobCancelTruncatesLongReasonBeforePersisting(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarnessWithConfig(t, func(cfg *config.Config) {
+		cfg.PollAssignmentWait = 0
+	})
+
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "claim and cancel with long reason")
+
+	h.requestJSON(t, http.MethodGet, "/responders/work", responder.apiKey, nil, http.StatusOK, nil)
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/claim", responder.apiKey, nil, http.StatusOK, nil)
+
+	longReason := strings.Repeat("x", responderCancelReasonLimit+7)
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/responder-cancel", responder.apiKey, map[string]any{
+		"reason": longReason,
+	}, http.StatusOK, nil)
+
+	wantReason := strings.Repeat("x", responderCancelReasonLimit)
+	if got := h.scalarString(t, `SELECT content FROM messages WHERE session_id = $1 AND type = 'feedback' AND role = 'responder' ORDER BY created_at DESC LIMIT 1`, sessionID); got != fmt.Sprintf(`a responder cancelled the claimed job due to %q`, wantReason) {
+		t.Fatalf("feedback message = %q", got)
+	}
 }
 
 func TestDirectAssignmentResponderWorkReturnsAssignedJob(t *testing.T) {
