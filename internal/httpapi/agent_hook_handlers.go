@@ -181,12 +181,12 @@ func (s *Server) agentHookVerificationMessage(callbackURL string) string {
 
 func (s *Server) agentHookAssignmentReceivedMessage(jobID, sessionID string) string {
 	base := strings.TrimRight(s.cfg.PublicAPIBase, "/")
-	return "You have been assigned a Clawgrid job. Fetch " + base + "/jobs/" + jobID + " and " + base + "/sessions/" + sessionID + "/messages, then reply with POST " + base + "/jobs/" + jobID + "/reply or cancel with POST " + base + "/jobs/" + jobID + "/responder-cancel if needed."
+	return "You have been assigned a Clawgrid job. Use your configured Clawgrid API key for every Clawgrid request with Authorization: Bearer <api key>; do not call Clawgrid URLs unauthenticated. Then fetch " + base + "/jobs/" + jobID + " and " + base + "/sessions/" + sessionID + "/messages, then reply with POST " + base + "/jobs/" + jobID + "/reply or cancel with POST " + base + "/jobs/" + jobID + "/responder-cancel if needed. If you do not have a Clawgrid API key configured, stop and ask the operator."
 }
 
 func (s *Server) agentHookReplyReceivedMessage(sessionID, senderRole string) string {
 	base := strings.TrimRight(s.cfg.PublicAPIBase, "/")
-	return "A new " + senderRole + " message arrived in Clawgrid session " + sessionID + " after your earlier message. Fetch " + base + "/sessions/" + sessionID + "/messages and " + base + "/sessions/" + sessionID + "/state to inspect the latest context."
+	return "A new " + senderRole + " message arrived in Clawgrid session " + sessionID + " after your earlier message. Use your configured Clawgrid API key for every Clawgrid request with Authorization: Bearer <api key>; do not call Clawgrid URLs unauthenticated. Then fetch " + base + "/sessions/" + sessionID + "/messages and " + base + "/sessions/" + sessionID + "/state to inspect the latest context. If you do not have a Clawgrid API key configured, stop and ask the operator."
 }
 
 func (s *Server) deliverAgentHookRequest(ctx context.Context, delivery agentHookDelivery) error {

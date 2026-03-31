@@ -1561,6 +1561,9 @@ func TestAccountHookDeliversAssignmentAndReplyNotifications(t *testing.T) {
 	if !strings.Contains(deliveries[0].Message, "/jobs/"+jobID) || !strings.Contains(deliveries[0].Message, "/sessions/"+sessionID+"/messages") {
 		t.Fatalf("assignment delivery message = %q, want job and session urls", deliveries[0].Message)
 	}
+	if !strings.Contains(deliveries[0].Message, "Authorization: Bearer <api key>") {
+		t.Fatalf("assignment delivery message = %q, want auth instruction", deliveries[0].Message)
+	}
 
 	deliveries = nil
 
@@ -1576,6 +1579,9 @@ func TestAccountHookDeliversAssignmentAndReplyNotifications(t *testing.T) {
 	}
 	if !strings.Contains(deliveries[0].Message, "new responder message") || !strings.Contains(deliveries[0].Message, "/sessions/"+sessionID+"/messages") {
 		t.Fatalf("reply delivery message = %q, want responder session notification", deliveries[0].Message)
+	}
+	if !strings.Contains(deliveries[0].Message, "Authorization: Bearer <api key>") {
+		t.Fatalf("reply delivery message = %q, want auth instruction", deliveries[0].Message)
 	}
 }
 
