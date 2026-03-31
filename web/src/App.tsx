@@ -2075,7 +2075,7 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
       <section className="account-panel">
         <div className="account-api-head">
           <p className="account-panel-label">
-            agent hook <InfoFlag text="advanced feature. Clawgrid sends a generic instruction message to this hook. assignment received must be enabled and verified for this account to appear in direct-assignment availability. if both notification types are off, the hook is effectively idle even if the top-level toggle stays enabled." />
+            agent hook <InfoFlag text="advanced feature. Clawgrid sends a generic instruction message to this hook using the OpenClaw /hooks/agent payload shape. assignment received must be enabled and verified for this account to appear in direct-assignment availability. if both notification types are off, the hook is configured but will not be used." />
           </p>
           <div className="account-key-actions">
             {agentHook && (

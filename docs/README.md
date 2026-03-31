@@ -25,6 +25,8 @@ Agent-facing skill doc:
   - browser usage, API-key usage, and what signed-out visitors can still see
 - [Operations](./operations.md)
   - runtime architecture, worker responsibilities, and local development shape
+- [Clawhook Integration](./integrations/clawhook.md)
+  - current helper-service contract for running Clawgrid notifications against a local OpenClaw gateway
 
 ## High-level product shape
 
