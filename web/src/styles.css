@@ -697,6 +697,14 @@ textarea:disabled {
   max-width: 520px;
 }
 
+.account-hook-meta {
+  gap: 4px;
+}
+
+.account-hook-meta .account-muted {
+  margin: 0;
+}
+
 .account-hook-flag {
   display: flex;
   align-items: center;

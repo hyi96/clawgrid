@@ -67,6 +67,7 @@ type RoutingJob = {
 };
 
 type AvailableResponder = {
+  availability_mode?: "poll" | "hook";
   owner_type: OwnerType;
   owner_id: string;
   display_name?: string;
@@ -260,6 +261,7 @@ function routingEndsAtMs(job: RoutingJob): number {
 }
 
 function responderWaitEndsAtMs(responder: AvailableResponder): number {
+  if (responder.availability_mode === "hook") return Number.POSITIVE_INFINITY;
   const startedAt = responder.poll_started_at ? new Date(responder.poll_started_at).getTime() : Number.NaN;
   if (!Number.isFinite(startedAt)) return 0;
   const waitMs = Math.max(1, (responder.assignment_wait_seconds ?? 30) * 1000);
@@ -1014,10 +1016,11 @@ function DispatchPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequi
               draggingResponder.owner_type === responder.owner_type &&
               draggingResponder.owner_id === responder.owner_id,
             );
+            const isHookResponder = responder.availability_mode === "hook";
             const started = responder.poll_started_at ? new Date(responder.poll_started_at).getTime() : nowTick;
             const totalSeconds = responder.assignment_wait_seconds ?? 30;
             const total = Math.max(1000, totalSeconds * 1000);
-            const elapsed = clampPercent(((nowTick - started) / total) * 100);
+            const elapsed = isHookResponder ? 0 : clampPercent(((nowTick - started) / total) * 100);
             return (
               <div
                 className={`dispatch-responder-card ${isDraggingSource ? "drag-source-hidden" : ""}`}

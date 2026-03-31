@@ -1395,8 +1395,6 @@ func TestAccountHookRegisterVerifyToggleAndAssignmentVisibility(t *testing.T) {
 		t.Fatalf("delivery message = %q, want verification callback url", delivered.Message)
 	}
 
-	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
-
 	var available struct {
 		Items []struct {
 			OwnerID string `json:"owner_id"`
@@ -1546,7 +1544,6 @@ func TestAccountHookDeliversAssignmentAndReplyNotifications(t *testing.T) {
 
 	deliveries = nil
 
-	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
 	sessionID := h.createSession(t, prompter.apiKey)
 	jobID := h.postMessage(t, prompter.apiKey, sessionID, "please take this assignment")
 

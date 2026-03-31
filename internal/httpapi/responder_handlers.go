@@ -35,45 +35,90 @@ func (s *Server) serveRespondersAvailable(w http.ResponseWriter, r *http.Request
 	}
 	bandSize := dispatchBandSize(activeDispatchers, maxDispatchResponders, dispatchRespondersBandBase)
 	rows, err := s.db.Query(r.Context(), `
-SELECT ra.owner_type, ra.owner_id, ra.last_seen_at, ra.poll_started_at,
-       COALESCE(a.name, 'account') AS display_name,
-       COALESCE(a.responder_description, '') AS responder_description
-FROM responder_availability
-  ra
-LEFT JOIN accounts a ON ra.owner_type = 'account' AND a.id = ra.owner_id
-WHERE ra.owner_type = 'account'
-  AND ra.last_seen_at > now() - make_interval(secs => $1::int)
-  AND NOT (ra.owner_type = $2 AND ra.owner_id = $3)
-  AND ra.poll_started_at > now() - make_interval(secs => $4::int)
-  AND NOT EXISTS (
-    SELECT 1
-    FROM assignments a2
-    JOIN jobs j2 ON j2.id = a2.job_id
-    WHERE a2.status = 'active'
-      AND a2.responder_owner_type = ra.owner_type
-      AND a2.responder_owner_id = ra.owner_id
-      AND j2.response_message_id IS NULL
-  )
-  AND NOT EXISTS (
-    SELECT 1
-    FROM jobs j3
-    WHERE j3.status = 'system_pool'
-      AND j3.response_message_id IS NULL
-      AND j3.claim_owner_type = ra.owner_type
-      AND j3.claim_owner_id = ra.owner_id
-      AND j3.claim_expires_at > now()
-  )
-  AND NOT EXISTS (
-    SELECT 1
-    FROM account_hooks ah
-    WHERE ah.account_id = ra.owner_id
-      AND (
-        ah.enabled = FALSE
-        OR ah.status <> 'active'
-        OR ah.notify_assignment_received = FALSE
-      )
-  )
-ORDER BY ra.last_seen_at DESC
+WITH poll_candidates AS (
+  SELECT 'poll'::text AS availability_mode,
+         ra.owner_type,
+         ra.owner_id,
+         ra.last_seen_at,
+         ra.poll_started_at,
+         COALESCE(a.name, 'account') AS display_name,
+         COALESCE(a.responder_description, '') AS responder_description
+  FROM responder_availability ra
+  LEFT JOIN accounts a ON ra.owner_type = 'account' AND a.id = ra.owner_id
+  WHERE ra.owner_type = 'account'
+    AND ra.last_seen_at > now() - make_interval(secs => $1::int)
+    AND ra.poll_started_at > now() - make_interval(secs => $4::int)
+    AND NOT (ra.owner_type = $2 AND ra.owner_id = $3)
+    AND NOT EXISTS (
+      SELECT 1
+      FROM assignments a2
+      JOIN jobs j2 ON j2.id = a2.job_id
+      WHERE a2.status = 'active'
+        AND a2.responder_owner_type = ra.owner_type
+        AND a2.responder_owner_id = ra.owner_id
+        AND j2.response_message_id IS NULL
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM jobs j3
+      WHERE j3.status = 'system_pool'
+        AND j3.response_message_id IS NULL
+        AND j3.claim_owner_type = ra.owner_type
+        AND j3.claim_owner_id = ra.owner_id
+        AND j3.claim_expires_at > now()
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM account_hooks ah
+      WHERE ah.account_id = ra.owner_id
+    )
+),
+hook_candidates AS (
+  SELECT 'hook'::text AS availability_mode,
+         'account'::text AS owner_type,
+         ah.account_id AS owner_id,
+         COALESCE(ah.last_success_at, ah.verified_at, ah.verification_requested_at, ah.updated_at, ah.created_at) AS last_seen_at,
+         NULL::timestamptz AS poll_started_at,
+         COALESCE(a.name, 'account') AS display_name,
+         COALESCE(a.responder_description, '') AS responder_description
+  FROM account_hooks ah
+  JOIN accounts a ON a.id = ah.account_id
+  WHERE ah.enabled = TRUE
+    AND ah.status = 'active'
+    AND ah.notify_assignment_received = TRUE
+    AND NOT ('account' = $2 AND ah.account_id = $3)
+    AND NOT EXISTS (
+      SELECT 1
+      FROM assignments a2
+      JOIN jobs j2 ON j2.id = a2.job_id
+      WHERE a2.status = 'active'
+        AND a2.responder_owner_type = 'account'
+        AND a2.responder_owner_id = ah.account_id
+        AND j2.response_message_id IS NULL
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM jobs j3
+      WHERE j3.status = 'system_pool'
+        AND j3.response_message_id IS NULL
+        AND j3.claim_owner_type = 'account'
+        AND j3.claim_owner_id = ah.account_id
+        AND j3.claim_expires_at > now()
+    )
+)
+SELECT availability_mode,
+       owner_type,
+       owner_id,
+       last_seen_at,
+       poll_started_at,
+       display_name,
+       responder_description
+FROM (
+  SELECT * FROM poll_candidates
+  UNION ALL
+  SELECT * FROM hook_candidates
+) candidates
+ORDER BY last_seen_at DESC
 LIMIT $5`, int(s.cfg.ResponderActiveWindow.Seconds()), string(actor.OwnerType), actor.OwnerID, int(s.cfg.PollAssignmentWait.Seconds()), bandSize)
 	if err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
@@ -83,7 +128,7 @@ LIMIT $5`, int(s.cfg.ResponderActiveWindow.Seconds()), string(actor.OwnerType), 
 	candidates := []availableResponderRow{}
 	for rows.Next() {
 		var row availableResponderRow
-		_ = rows.Scan(&row.ownerType, &row.ownerID, &row.lastSeenAt, &row.pollStartedAt, &row.displayName, &row.description)
+		_ = rows.Scan(&row.availabilityMode, &row.ownerType, &row.ownerID, &row.lastSeenAt, &row.pollStartedAt, &row.displayName, &row.description)
 		candidates = append(candidates, row)
 	}
 	shuffleRespondersForDispatcher(candidates, actor, time.Now())
@@ -92,15 +137,19 @@ LIMIT $5`, int(s.cfg.ResponderActiveWindow.Seconds()), string(actor.OwnerType), 
 	}
 	items := []map[string]any{}
 	for _, row := range candidates {
-		items = append(items, map[string]any{
+		item := map[string]any{
+			"availability_mode":      row.availabilityMode,
 			"owner_type":              row.ownerType,
 			"owner_id":                row.ownerID,
 			"display_name":            row.displayName,
 			"last_seen_at":            row.lastSeenAt,
-			"poll_started_at":         row.pollStartedAt,
 			"responder_description":   row.description,
-			"assignment_wait_seconds": int(s.cfg.PollAssignmentWait.Seconds()),
-		})
+		}
+		if row.pollStartedAt != nil {
+			item["poll_started_at"] = row.pollStartedAt
+			item["assignment_wait_seconds"] = int(s.cfg.PollAssignmentWait.Seconds())
+		}
+		items = append(items, item)
 	}
 	respondJSON(w, http.StatusOK, map[string]any{"items": items})
 }

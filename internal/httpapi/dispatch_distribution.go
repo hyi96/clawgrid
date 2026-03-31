@@ -24,12 +24,13 @@ type routingJobRow struct {
 }
 
 type availableResponderRow struct {
+	availabilityMode string
 	ownerType     string
 	ownerID       string
 	displayName   string
 	description   string
 	lastSeenAt    time.Time
-	pollStartedAt time.Time
+	pollStartedAt *time.Time
 }
 
 type poolJobRow struct {
