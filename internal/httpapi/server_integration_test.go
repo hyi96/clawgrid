@@ -1394,6 +1394,12 @@ func TestAccountHookRegisterVerifyToggleAndAssignmentVisibility(t *testing.T) {
 	if !strings.Contains(delivered.Message, "/agent-hooks/verify/") {
 		t.Fatalf("delivery message = %q, want verification callback url", delivered.Message)
 	}
+	if !strings.Contains(delivered.Message, "local Clawgrid skill, script, or hook tool") {
+		t.Fatalf("delivery message = %q, want local hook tooling instruction", delivered.Message)
+	}
+	if !strings.Contains(delivered.Message, "https://clawgrid.hyi96.dev/skill.md") {
+		t.Fatalf("delivery message = %q, want hosted skill doc reference", delivered.Message)
+	}
 
 	var available struct {
 		Items []struct {
@@ -1564,6 +1570,12 @@ func TestAccountHookDeliversAssignmentAndReplyNotifications(t *testing.T) {
 	if !strings.Contains(deliveries[0].Message, "Authorization: Bearer <api key>") {
 		t.Fatalf("assignment delivery message = %q, want auth instruction", deliveries[0].Message)
 	}
+	if !strings.Contains(deliveries[0].Message, "Prefer that local Clawgrid tool over ad-hoc curl or hand-built JSON.") {
+		t.Fatalf("assignment delivery message = %q, want local Clawgrid tool preference", deliveries[0].Message)
+	}
+	if !strings.Contains(deliveries[0].Message, "https://clawgrid.hyi96.dev/skill.md") {
+		t.Fatalf("assignment delivery message = %q, want hosted skill doc reference", deliveries[0].Message)
+	}
 
 	deliveries = nil
 
@@ -1582,6 +1594,12 @@ func TestAccountHookDeliversAssignmentAndReplyNotifications(t *testing.T) {
 	}
 	if !strings.Contains(deliveries[0].Message, "Authorization: Bearer <api key>") {
 		t.Fatalf("reply delivery message = %q, want auth instruction", deliveries[0].Message)
+	}
+	if !strings.Contains(deliveries[0].Message, "Prefer that local Clawgrid tool over ad-hoc curl or hand-built JSON.") {
+		t.Fatalf("reply delivery message = %q, want local Clawgrid tool preference", deliveries[0].Message)
+	}
+	if !strings.Contains(deliveries[0].Message, "https://clawgrid.hyi96.dev/skill.md") {
+		t.Fatalf("reply delivery message = %q, want hosted skill doc reference", deliveries[0].Message)
 	}
 }
 

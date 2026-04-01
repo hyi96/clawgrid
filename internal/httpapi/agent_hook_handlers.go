@@ -170,17 +170,45 @@ func (s *Server) accountHookVerifyURL(token string) string {
 }
 
 func (s *Server) agentHookVerificationMessage(callbackURL string) string {
-	return "Clawgrid webhook verification. To verify this hook, make an HTTP POST request with no body to " + callbackURL + "."
+	return strings.Join([]string{
+		"This is a Clawgrid hook verification task.",
+		"1. If a local Clawgrid skill, script, or hook tool is available, use it first.",
+		"2. Otherwise make exactly one HTTP POST request with no body to " + callbackURL + ".",
+		"3. If you cannot perform that callback safely, stop and ask the operator.",
+		"You can also reference https://clawgrid.hyi96.dev/skill.md if needed.",
+	}, "\n")
 }
 
 func (s *Server) agentHookAssignmentReceivedMessage(jobID, sessionID string) string {
 	base := strings.TrimRight(s.cfg.PublicAPIBase, "/")
-	return "You have been assigned a Clawgrid job. Use your configured Clawgrid API key for every Clawgrid request with Authorization: Bearer <api key>; do not call Clawgrid URLs unauthenticated. Then fetch " + base + "/jobs/" + jobID + " and " + base + "/sessions/" + sessionID + "/messages, then reply with POST " + base + "/jobs/" + jobID + "/reply or cancel with POST " + base + "/jobs/" + jobID + "/responder-cancel if needed. If you do not have a Clawgrid API key configured, stop and ask the operator."
+	return strings.Join([]string{
+		"This is a Clawgrid responder task notification.",
+		"1. If a local Clawgrid skill, script, or tool is available, use it first.",
+		"2. Prefer that local Clawgrid tool over ad-hoc curl or hand-built JSON.",
+		"3. Otherwise use your configured Clawgrid API key for every Clawgrid request with Authorization: Bearer <api key>.",
+		"4. Do not call Clawgrid URLs unauthenticated.",
+		"5. Fetch " + base + "/jobs/" + jobID,
+		"6. Fetch " + base + "/sessions/" + sessionID + "/messages",
+		"7. Then either reply with POST " + base + "/jobs/" + jobID + "/reply or cancel with POST " + base + "/jobs/" + jobID + "/responder-cancel if needed.",
+		"8. If you do not have a Clawgrid API key or local Clawgrid tooling configured, stop and ask the operator.",
+		"You can also reference https://clawgrid.hyi96.dev/skill.md if needed.",
+	}, "\n")
 }
 
 func (s *Server) agentHookReplyReceivedMessage(sessionID, senderRole string) string {
 	base := strings.TrimRight(s.cfg.PublicAPIBase, "/")
-	return "A new " + senderRole + " message arrived in Clawgrid session " + sessionID + " after your earlier message. Use your configured Clawgrid API key for every Clawgrid request with Authorization: Bearer <api key>; do not call Clawgrid URLs unauthenticated. Then fetch " + base + "/sessions/" + sessionID + "/messages and " + base + "/sessions/" + sessionID + "/state to inspect the latest context. If you do not have a Clawgrid API key configured, stop and ask the operator."
+	return strings.Join([]string{
+		"This is a Clawgrid session update notification.",
+		"1. If a local Clawgrid skill, script, or tool is available, use it first.",
+		"2. Prefer that local Clawgrid tool over ad-hoc curl or hand-built JSON.",
+		"3. Otherwise use your configured Clawgrid API key for every Clawgrid request with Authorization: Bearer <api key>.",
+		"4. Do not call Clawgrid URLs unauthenticated.",
+		"5. A new " + senderRole + " message arrived in session " + sessionID + " after your earlier message.",
+		"6. Fetch " + base + "/sessions/" + sessionID + "/messages",
+		"7. Fetch " + base + "/sessions/" + sessionID + "/state",
+		"8. If you do not have a Clawgrid API key or local Clawgrid tooling configured, stop and ask the operator.",
+		"You can also reference https://clawgrid.hyi96.dev/skill.md if needed.",
+	}, "\n")
 }
 
 func (s *Server) deliverAgentHookRequest(ctx context.Context, delivery agentHookDelivery) error {
