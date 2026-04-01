@@ -77,7 +77,7 @@ func (s *Server) handleAccountStats(w http.ResponseWriter, r *http.Request, acto
 		respondErr(w, http.StatusForbidden, "account required")
 		return
 	}
-	var responderUp, responderDown int
+	var responderUp, responderDown, responderAssignmentFailures, responderClaimFailures int
 	if err := s.db.QueryRow(r.Context(), `
 SELECT
   COUNT(*) FILTER (WHERE j.prompter_vote = 'up')::int AS up_count,
@@ -87,6 +87,36 @@ JOIN messages m ON m.id = j.response_message_id
 WHERE m.owner_type = $1
   AND m.owner_id = $2
   AND j.prompter_vote IN ('up','down')`, string(actor.OwnerType), actor.OwnerID).Scan(&responderUp, &responderDown); err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.db.QueryRow(r.Context(), `
+SELECT COUNT(*)::int
+FROM assignments
+WHERE responder_owner_type = $1
+  AND responder_owner_id = $2
+  AND status IN ('timeout', 'refused')`, string(actor.OwnerType), actor.OwnerID).Scan(&responderAssignmentFailures); err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.db.QueryRow(r.Context(), `
+SELECT COUNT(*)::int
+FROM wallet_ledger l
+WHERE l.owner_type = $1
+  AND l.owner_id = $2
+  AND (
+    l.reason = 'responder_stake_slashed_claim_cancel'
+    OR (
+      l.reason = 'responder_stake_slashed_timeout'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM assignments a
+        WHERE a.job_id = l.job_id
+          AND a.responder_owner_type = l.owner_type
+          AND a.responder_owner_id = l.owner_id
+      )
+    )
+  )`, string(actor.OwnerType), actor.OwnerID).Scan(&responderClaimFailures); err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -126,19 +156,19 @@ WHERE last_asn.dispatcher_owner_type = $1
 		return
 	}
 
-	respondJSON(w, http.StatusOK, buildAccountStats(feedbackGiven, repliesReceived, responderUp, responderDown, dispatchUp, dispatchDown, responsesSubmitted))
+	respondJSON(w, http.StatusOK, buildAccountStats(feedbackGiven, repliesReceived, responderUp, responderDown, responderAssignmentFailures+responderClaimFailures, dispatchUp, dispatchDown, responsesSubmitted))
 }
 
-func buildAccountStats(feedbackGiven, repliesReceived, responderUp, responderDown, dispatchUp, dispatchDown, responsesSubmitted int) map[string]any {
-	responderRatedTotal := responderUp + responderDown
+func buildAccountStats(feedbackGiven, repliesReceived, responderUp, responderDown, responderFailures, dispatchUp, dispatchDown, responsesSubmitted int) map[string]any {
+	responderOutcomeTotal := responderUp + responderDown + responderFailures
 	dispatchRatedTotal := dispatchUp + dispatchDown
 	feedbackRate := "n/a"
 	if repliesReceived > 0 {
 		feedbackRate = fmt.Sprintf("%d / %d", feedbackGiven, repliesReceived)
 	}
 	jobSuccessRate := "n/a"
-	if responderRatedTotal > 0 {
-		jobSuccessRate = fmt.Sprintf("%.1f%%", (100.0*float64(responderUp))/float64(responderRatedTotal))
+	if responderOutcomeTotal > 0 {
+		jobSuccessRate = fmt.Sprintf("%.1f%%", (100.0*float64(responderUp))/float64(responderOutcomeTotal))
 	}
 	dispatchAccuracy := "n/a"
 	if dispatchRatedTotal > 0 {
@@ -147,7 +177,7 @@ func buildAccountStats(feedbackGiven, repliesReceived, responderUp, responderDow
 	return map[string]any{
 		"job_success_rate":    jobSuccessRate,
 		"feedback_rate":       feedbackRate,
-		"jobs_completed":      responderRatedTotal,
+		"jobs_completed":      responsesSubmitted,
 		"jobs_dispatched":     dispatchRatedTotal,
 		"dispatch_accuracy":   dispatchAccuracy,
 		"responses_submitted": responsesSubmitted,

@@ -76,22 +76,66 @@ func (s *Service) buildLeaderboardEntries(ctx context.Context, tx pgx.Tx, catego
 	switch category {
 	case LeaderboardCategoryJobSuccess:
 		return queryLeaderboardEntries(ctx, tx, `
+WITH responder_rated AS (
+  SELECT
+    m.owner_id AS account_id,
+    COUNT(*) FILTER (WHERE j.prompter_vote = 'up')::int AS up_count,
+    COUNT(*) FILTER (WHERE j.prompter_vote = 'down')::int AS down_count
+  FROM messages m
+  JOIN jobs j ON j.response_message_id = m.id
+  WHERE m.owner_type = 'account'
+    AND m.type = 'text'
+    AND m.role = 'responder'
+    AND j.prompter_vote IN ('up','down')
+  GROUP BY m.owner_id
+),
+responder_assignment_failures AS (
+  SELECT
+    responder_owner_id AS account_id,
+    COUNT(*)::int AS failure_count
+  FROM assignments
+  WHERE responder_owner_type = 'account'
+    AND status IN ('timeout', 'refused')
+  GROUP BY responder_owner_id
+),
+responder_claim_failures AS (
+  SELECT
+    l.owner_id AS account_id,
+    COUNT(*)::int AS failure_count
+  FROM wallet_ledger l
+  WHERE l.owner_type = 'account'
+    AND (
+      l.reason = 'responder_stake_slashed_claim_cancel'
+      OR (
+        l.reason = 'responder_stake_slashed_timeout'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM assignments a
+          WHERE a.job_id = l.job_id
+            AND a.responder_owner_type = l.owner_type
+            AND a.responder_owner_id = l.owner_id
+        )
+      )
+    )
+  GROUP BY l.owner_id
+)
 SELECT
   a.id,
   a.name,
-  ROUND((100.0 * COUNT(*) FILTER (WHERE j.prompter_vote = 'up') / COUNT(*) FILTER (WHERE j.prompter_vote IN ('up','down')))::numeric, 1)::float8 AS metric_value,
-  TO_CHAR(ROUND((100.0 * COUNT(*) FILTER (WHERE j.prompter_vote = 'up') / COUNT(*) FILTER (WHERE j.prompter_vote IN ('up','down')))::numeric, 1), 'FM999990.0') || '%' AS metric_display
+  ROUND((
+    100.0 * COALESCE(rr.up_count, 0)::float8 /
+    NULLIF((COALESCE(rr.up_count, 0) + COALESCE(rr.down_count, 0) + COALESCE(raf.failure_count, 0) + COALESCE(rcf.failure_count, 0))::float8, 0)
+  )::numeric, 1)::float8 AS metric_value,
+  TO_CHAR(ROUND((
+    100.0 * COALESCE(rr.up_count, 0)::float8 /
+    NULLIF((COALESCE(rr.up_count, 0) + COALESCE(rr.down_count, 0) + COALESCE(raf.failure_count, 0) + COALESCE(rcf.failure_count, 0))::float8, 0)
+  )::numeric, 1), 'FM999990.0') || '%' AS metric_display
 FROM accounts a
-JOIN messages m
-  ON m.owner_type = 'account'
- AND m.owner_id = a.id
- AND m.type = 'text'
- AND m.role = 'responder'
-JOIN jobs j ON j.response_message_id = m.id
-WHERE j.prompter_vote IN ('up','down')
-GROUP BY a.id, a.name
-HAVING COUNT(*) FILTER (WHERE j.prompter_vote IN ('up','down')) >= $1
-ORDER BY metric_value DESC, COUNT(*) FILTER (WHERE j.prompter_vote IN ('up','down')) DESC, a.name ASC
+LEFT JOIN responder_rated rr ON rr.account_id = a.id
+LEFT JOIN responder_assignment_failures raf ON raf.account_id = a.id
+LEFT JOIN responder_claim_failures rcf ON rcf.account_id = a.id
+WHERE (COALESCE(rr.up_count, 0) + COALESCE(rr.down_count, 0) + COALESCE(raf.failure_count, 0) + COALESCE(rcf.failure_count, 0)) >= $1
+ORDER BY metric_value DESC, (COALESCE(rr.up_count, 0) + COALESCE(rr.down_count, 0) + COALESCE(raf.failure_count, 0) + COALESCE(rcf.failure_count, 0)) DESC, a.name ASC
 LIMIT $2`, leaderboardMinRatedCount, leaderboardRankLimit)
 	case LeaderboardCategoryDispatchAccuracy:
 		return queryLeaderboardEntries(ctx, tx, `

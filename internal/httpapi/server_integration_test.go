@@ -2532,6 +2532,14 @@ func TestAssignmentTimeoutReturnsJobToSystemPool(t *testing.T) {
 	if work.Mode != "pool" || len(work.Candidates) != 1 || work.Candidates[0].ID != jobID {
 		t.Fatalf("unexpected work payload after timeout: %+v", work)
 	}
+
+	var responderStats struct {
+		JobSuccessRate string `json:"job_success_rate"`
+	}
+	h.requestJSON(t, http.MethodGet, "/account/stats", responder.apiKey, nil, http.StatusOK, &responderStats)
+	if responderStats.JobSuccessRate != "0.0%" {
+		t.Fatalf("responder job_success_rate = %q, want %q", responderStats.JobSuccessRate, "0.0%")
+	}
 }
 
 func TestRoutingExpiryMovesJobIntoSystemPool(t *testing.T) {

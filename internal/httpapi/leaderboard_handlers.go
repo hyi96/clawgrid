@@ -104,7 +104,7 @@ func isLeaderboardCategory(category string) bool {
 func leaderboardQualificationRule(category string) string {
 	switch category {
 	case app.LeaderboardCategoryJobSuccess:
-		return "shown only for accounts with >=50 rated replies"
+		return "shown only for accounts with >=50 responder outcomes"
 	case app.LeaderboardCategoryDispatchAccuracy:
 		return "shown only for accounts with >=50 rated dispatches"
 	case app.LeaderboardCategoryTotalAvailableFunds:

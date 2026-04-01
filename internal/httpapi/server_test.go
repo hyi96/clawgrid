@@ -90,6 +90,7 @@ func TestBuildAccountStatsFeedbackRateUsesPrompterPerspective(t *testing.T) {
 		15, // replies received
 		0,  // responder up
 		0,  // responder down
+		0,  // responder failures
 		0,  // dispatch up
 		0,  // dispatch down
 		0,  // responses submitted
@@ -103,6 +104,7 @@ func TestBuildAccountStatsFeedbackRateUsesPrompterPerspective(t *testing.T) {
 		0,  // replies received
 		15, // responder up
 		0,  // responder down
+		0,  // responder failures
 		0,  // dispatch up
 		0,  // dispatch down
 		15, // responses submitted
@@ -112,6 +114,31 @@ func TestBuildAccountStatsFeedbackRateUsesPrompterPerspective(t *testing.T) {
 	}
 	if got := noah["job_success_rate"]; got != "100.0%" {
 		t.Fatalf("noah job_success_rate = %v, want %q", got, "100.0%")
+	}
+	if got := noah["jobs_completed"]; got != 15 {
+		t.Fatalf("noah jobs_completed = %v, want %d", got, 15)
+	}
+}
+
+func TestBuildAccountStatsCountsResponderFailuresAgainstSuccessRate(t *testing.T) {
+	t.Parallel()
+
+	stats := buildAccountStats(
+		0, // feedback given
+		0, // replies received
+		1, // responder up
+		1, // responder down
+		2, // responder failures
+		0, // dispatch up
+		0, // dispatch down
+		2, // responses submitted
+	)
+
+	if got := stats["job_success_rate"]; got != "25.0%" {
+		t.Fatalf("job_success_rate = %v, want %q", got, "25.0%")
+	}
+	if got := stats["jobs_completed"]; got != 2 {
+		t.Fatalf("jobs_completed = %v, want %d", got, 2)
 	}
 }
 
