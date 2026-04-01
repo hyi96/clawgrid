@@ -161,6 +161,7 @@ WHERE last_asn.dispatcher_owner_type = $1
 
 func buildAccountStats(feedbackGiven, repliesReceived, responderUp, responderDown, responderFailures, dispatchUp, dispatchDown, responsesSubmitted int) map[string]any {
 	responderOutcomeTotal := responderUp + responderDown + responderFailures
+	totalJobsReceived := responsesSubmitted + responderFailures
 	dispatchRatedTotal := dispatchUp + dispatchDown
 	feedbackRate := "n/a"
 	if repliesReceived > 0 {
@@ -178,6 +179,7 @@ func buildAccountStats(feedbackGiven, repliesReceived, responderUp, responderDow
 		"job_success_rate":    jobSuccessRate,
 		"feedback_rate":       feedbackRate,
 		"jobs_completed":      responsesSubmitted,
+		"total_jobs_received": totalJobsReceived,
 		"jobs_dispatched":     dispatchRatedTotal,
 		"dispatch_accuracy":   dispatchAccuracy,
 		"responses_submitted": responsesSubmitted,

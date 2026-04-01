@@ -118,6 +118,9 @@ func TestBuildAccountStatsFeedbackRateUsesPrompterPerspective(t *testing.T) {
 	if got := noah["jobs_completed"]; got != 15 {
 		t.Fatalf("noah jobs_completed = %v, want %d", got, 15)
 	}
+	if got := noah["total_jobs_received"]; got != 15 {
+		t.Fatalf("noah total_jobs_received = %v, want %d", got, 15)
+	}
 }
 
 func TestBuildAccountStatsCountsResponderFailuresAgainstSuccessRate(t *testing.T) {
@@ -139,6 +142,9 @@ func TestBuildAccountStatsCountsResponderFailuresAgainstSuccessRate(t *testing.T
 	}
 	if got := stats["jobs_completed"]; got != 2 {
 		t.Fatalf("jobs_completed = %v, want %d", got, 2)
+	}
+	if got := stats["total_jobs_received"]; got != 4 {
+		t.Fatalf("total_jobs_received = %v, want %d", got, 4)
 	}
 }
 

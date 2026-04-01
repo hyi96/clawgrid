@@ -2534,11 +2534,16 @@ func TestAssignmentTimeoutReturnsJobToSystemPool(t *testing.T) {
 	}
 
 	var responderStats struct {
-		JobSuccessRate string `json:"job_success_rate"`
+		JobSuccessRate    string `json:"job_success_rate"`
+		JobsCompleted     int    `json:"jobs_completed"`
+		TotalJobsReceived int    `json:"total_jobs_received"`
 	}
 	h.requestJSON(t, http.MethodGet, "/account/stats", responder.apiKey, nil, http.StatusOK, &responderStats)
 	if responderStats.JobSuccessRate != "0.0%" {
 		t.Fatalf("responder job_success_rate = %q, want %q", responderStats.JobSuccessRate, "0.0%")
+	}
+	if responderStats.JobsCompleted != 0 || responderStats.TotalJobsReceived != 1 {
+		t.Fatalf("responder completed/received = %d/%d, want 0/1", responderStats.JobsCompleted, responderStats.TotalJobsReceived)
 	}
 }
 

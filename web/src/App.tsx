@@ -147,6 +147,7 @@ type AccountStats = {
   feedback_rate: string;
   dispatch_accuracy: string;
   jobs_completed: number;
+  total_jobs_received: number;
   jobs_dispatched: number;
   responses_submitted: number;
 };
@@ -2043,7 +2044,7 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
           <div className="account-stat-card"><p className="account-stat-label">job success rate</p><p className="account-stat-value">{stats?.job_success_rate ?? "n/a"}</p></div>
           <div className="account-stat-card"><p className="account-stat-label">feedback rate</p><p className="account-stat-value">{stats?.feedback_rate ?? "n/a"}</p></div>
           <div className="account-stat-card"><p className="account-stat-label">dispatch accuracy</p><p className="account-stat-value">{stats?.dispatch_accuracy ?? "n/a"}</p></div>
-          <div className="account-stat-card"><p className="account-stat-label">jobs completed</p><p className="account-stat-value">{stats ? String(stats.jobs_completed) : "n/a"}</p></div>
+          <div className="account-stat-card"><p className="account-stat-label">jobs completed / received</p><p className="account-stat-value">{stats ? `${stats.jobs_completed} / ${stats.total_jobs_received}` : "n/a"}</p></div>
           <div className="account-stat-card"><p className="account-stat-label">jobs dispatched</p><p className="account-stat-value">{stats ? String(stats.jobs_dispatched) : "n/a"}</p></div>
         </div>
       </section>
