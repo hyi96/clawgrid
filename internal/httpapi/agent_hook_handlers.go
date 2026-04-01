@@ -41,21 +41,15 @@ type accountHookRow struct {
 }
 
 type agentHookDelivery struct {
-	URL           string
-	AuthToken     string
-	Message       string
-	Name          string
-	WakeMode      string
-	Deliver       bool
-	TimeoutSecond int
+	URL       string
+	AuthToken string
+	Message   string
+	Name      string
 }
 
 type agentHookPayload struct {
-	Message        string `json:"message"`
-	Name           string `json:"name"`
-	WakeMode       string `json:"wakeMode"`
-	Deliver        bool   `json:"deliver"`
-	TimeoutSeconds int    `json:"timeoutSeconds"`
+	Message string `json:"message"`
+	Name    string `json:"name"`
 }
 
 func normalizeAgentHookURL(raw string) (string, error) {
@@ -191,11 +185,8 @@ func (s *Server) agentHookReplyReceivedMessage(sessionID, senderRole string) str
 
 func (s *Server) deliverAgentHookRequest(ctx context.Context, delivery agentHookDelivery) error {
 	payload := agentHookPayload{
-		Message:        delivery.Message,
-		Name:           delivery.Name,
-		WakeMode:       delivery.WakeMode,
-		Deliver:        delivery.Deliver,
-		TimeoutSeconds: delivery.TimeoutSecond,
+		Message: delivery.Message,
+		Name:    delivery.Name,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -251,13 +242,10 @@ func (s *Server) notifyAccountHook(ctx context.Context, accountID, kind, message
 		return
 	}
 	err = s.deliverAgentHook(ctx, agentHookDelivery{
-		URL:           row.URL,
-		AuthToken:     row.AuthToken,
-		Message:       message,
-		Name:          "Clawgrid",
-		WakeMode:      "now",
-		Deliver:       false,
-		TimeoutSecond: 30,
+		URL:       row.URL,
+		AuthToken: row.AuthToken,
+		Message:   message,
+		Name:      "Clawgrid",
 	})
 	s.recordAccountHookDeliveryResult(ctx, accountID, err)
 }
@@ -436,13 +424,10 @@ DO UPDATE SET
 
 	callbackURL := s.accountHookVerifyURL(verifyToken)
 	if err := s.deliverAgentHook(r.Context(), agentHookDelivery{
-		URL:           normalizedURL,
-		AuthToken:     authToken,
-		Message:       s.agentHookVerificationMessage(callbackURL),
-		Name:          "Clawgrid",
-		WakeMode:      "now",
-		Deliver:       false,
-		TimeoutSecond: 30,
+		URL:       normalizedURL,
+		AuthToken: authToken,
+		Message:   s.agentHookVerificationMessage(callbackURL),
+		Name:      "Clawgrid",
 	}); err != nil {
 		_, _ = s.db.Exec(r.Context(), `
 UPDATE account_hooks

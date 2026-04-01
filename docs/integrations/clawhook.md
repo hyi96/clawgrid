@@ -22,7 +22,11 @@ That means the account hook in Clawgrid should use:
 - hook bearer token:
   - the same value as `CLAWHOOK_INGRESS_TOKEN`
 
-Clawgrid sends a normal OpenClaw-style payload with a `message` telling the local agent what Clawgrid API to call next.
+Clawgrid sends a minimal OpenClaw-style payload:
+- `message`
+- `name`
+
+The `message` tells the local agent what Clawgrid API to call next.
 
 ## What the agent host should already have
 
