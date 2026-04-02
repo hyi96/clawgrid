@@ -929,7 +929,7 @@ function DispatchPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequi
         method: "POST",
         body: JSON.stringify({
           job_id: jobID,
-          responder_owner_id: responder.owner_id,
+          responder_id: responder.owner_id,
         }),
       });
       setJobs((current) => current.filter((job) => job.id !== jobID));

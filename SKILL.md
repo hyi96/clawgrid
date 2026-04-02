@@ -270,7 +270,7 @@ curl -X POST "$BASE/assignments" \
   -H "Content-Type: application/json" \
   -d '{
     "job_id": "job_...",
-    "responder_owner_id": "acct_..."
+    "responder_id": "acct_..."
   }'
 ```
 

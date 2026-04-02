@@ -29,6 +29,7 @@ func (s *Server) handleAssignmentsCreate(w http.ResponseWriter, r *http.Request,
 	}
 	var body struct {
 		JobID            string `json:"job_id"`
+		ResponderID      string `json:"responder_id"`
 		ResponderOwnerID string `json:"responder_owner_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -36,7 +37,11 @@ func (s *Server) handleAssignmentsCreate(w http.ResponseWriter, r *http.Request,
 		respondErr(w, http.StatusBadRequest, "bad body")
 		return
 	}
-	if body.JobID == "" || body.ResponderOwnerID == "" {
+	responderID := body.ResponderID
+	if responderID == "" {
+		responderID = body.ResponderOwnerID
+	}
+	if body.JobID == "" || responderID == "" {
 		s.recordAssignmentFailure(r.Context(), actor.OwnerID)
 		respondErr(w, http.StatusBadRequest, "bad body")
 		return
@@ -47,11 +52,11 @@ func (s *Server) handleAssignmentsCreate(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	defer tx.Rollback(r.Context())
-	if err := lockResponderActorTx(r.Context(), tx, domain.OwnerAccount, body.ResponderOwnerID); err != nil {
+	if err := lockResponderActorTx(r.Context(), tx, domain.OwnerAccount, responderID); err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	responderExists, err := responderActorExistsTx(r.Context(), tx, domain.OwnerAccount, body.ResponderOwnerID)
+	responderExists, err := responderActorExistsTx(r.Context(), tx, domain.OwnerAccount, responderID)
 	if err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -87,13 +92,13 @@ FOR UPDATE`, body.JobID, int(s.cfg.AssignmentDeadline.Minutes())).Scan(&jobOwner
 		jobOwnerType,
 		jobOwnerID,
 		string(domain.OwnerAccount),
-		body.ResponderOwnerID,
+		responderID,
 	); guard != "" {
 		s.recordAssignmentFailure(r.Context(), actor.OwnerID)
 		respondErr(w, http.StatusBadRequest, guard)
 		return
 	}
-	responderBusy, err := responderHasActiveWorkTx(r.Context(), tx, domain.OwnerAccount, body.ResponderOwnerID, "")
+	responderBusy, err := responderHasActiveWorkTx(r.Context(), tx, domain.OwnerAccount, responderID, "")
 	if err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -107,7 +112,7 @@ FOR UPDATE`, body.JobID, int(s.cfg.AssignmentDeadline.Minutes())).Scan(&jobOwner
 		r.Context(),
 		tx,
 		domain.OwnerAccount,
-		body.ResponderOwnerID,
+		responderID,
 		int(s.cfg.ResponderActiveWindow.Seconds()),
 		int(s.cfg.PollAssignmentWait.Seconds()),
 	)
@@ -121,7 +126,7 @@ FOR UPDATE`, body.JobID, int(s.cfg.AssignmentDeadline.Minutes())).Scan(&jobOwner
 		return
 	}
 	selfDispatched := jobOwnerType == string(actor.OwnerType) && jobOwnerID == actor.OwnerID
-	if err := s.holdResponderStake(r.Context(), tx, body.JobID, domain.OwnerAccount, body.ResponderOwnerID); err != nil {
+	if err := s.holdResponderStake(r.Context(), tx, body.JobID, domain.OwnerAccount, responderID); err != nil {
 		if err.Error() == "insufficient_balance" {
 			s.recordAssignmentFailure(r.Context(), actor.OwnerID)
 			respondErr(w, http.StatusPaymentRequired, "responder_insufficient_stake_balance")
@@ -143,7 +148,7 @@ FOR UPDATE`, body.JobID, int(s.cfg.AssignmentDeadline.Minutes())).Scan(&jobOwner
 	_, err = tx.Exec(r.Context(), `
 INSERT INTO assignments(id, job_id, dispatcher_owner_type, dispatcher_owner_id, responder_owner_type, responder_owner_id, deadline_at, status)
 VALUES ($1,$2,$3,$4,$5,$6, now() + make_interval(mins => $7::int), 'active')`,
-		id, body.JobID, string(actor.OwnerType), actor.OwnerID, string(domain.OwnerAccount), body.ResponderOwnerID, timeLimitMinutes)
+		id, body.JobID, string(actor.OwnerType), actor.OwnerID, string(domain.OwnerAccount), responderID, timeLimitMinutes)
 	if err != nil {
 		s.recordAssignmentFailure(r.Context(), actor.OwnerID)
 		respondErr(w, http.StatusConflict, "assignment_conflict")
@@ -154,7 +159,7 @@ VALUES ($1,$2,$3,$4,$5,$6, now() + make_interval(mins => $7::int), 'active')`,
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.notifyAssignmentReceived(context.Background(), body.ResponderOwnerID, body.JobID, sessionID)
+	s.notifyAssignmentReceived(context.Background(), responderID, body.JobID, sessionID)
 	respondJSON(w, http.StatusCreated, map[string]any{"id": id})
 }
 

@@ -441,7 +441,7 @@ func TestJobClaimRejectsResponderWithOtherActiveWork(t *testing.T) {
 	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
 		"job_id":             jobAssigned,
-		"responder_owner_id": responder.accountID,
+		"responder_id": responder.accountID,
 	}, http.StatusCreated, nil)
 
 	sessionB := h.createSession(t, prompterB.apiKey)
@@ -592,8 +592,26 @@ func TestAssignmentRejectsUnknownResponderIdentity(t *testing.T) {
 
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
 		"job_id":             jobID,
-		"responder_owner_id": "acct_missing",
+		"responder_id": "acct_missing",
 	}, http.StatusNotFound, nil)
+}
+
+func TestAssignmentAcceptsLegacyResponderOwnerID(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	dispatcher := h.registerAccount(t, "dispatch")
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "assign this directly")
+
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
+	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
+		"job_id":             jobID,
+		"responder_owner_id": responder.accountID,
+	}, http.StatusCreated, nil)
 }
 
 func TestAssignmentRequiresLiveResponderAvailability(t *testing.T) {
@@ -609,7 +627,7 @@ func TestAssignmentRequiresLiveResponderAvailability(t *testing.T) {
 
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
 		"job_id":             jobID,
-		"responder_owner_id": responder.accountID,
+		"responder_id": responder.accountID,
 	}, http.StatusConflict, nil)
 }
 
@@ -629,7 +647,7 @@ func TestAssignmentRequiresDispatcherBalanceForPenaltyHold(t *testing.T) {
 
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
 		"job_id":             jobID,
-		"responder_owner_id": responder.accountID,
+		"responder_id": responder.accountID,
 	}, http.StatusPaymentRequired, nil)
 
 	if got := h.walletBalance(t, dispatcher.apiKey); math.Abs(got-0.1) > 1e-9 {
@@ -663,7 +681,7 @@ func TestCancellingResponderAvailabilityPreventsLaterAssignment(t *testing.T) {
 
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
 		"job_id":             jobID,
-		"responder_owner_id": responder.accountID,
+		"responder_id": responder.accountID,
 	}, http.StatusConflict, nil)
 }
 
@@ -681,7 +699,7 @@ func TestCancellingResponderAvailabilityReturnsAssignedJobIfAssignmentWonRace(t 
 	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
 		"job_id":             jobID,
-		"responder_owner_id": responder.accountID,
+		"responder_id": responder.accountID,
 	}, http.StatusCreated, nil)
 
 	var cancel struct {
@@ -714,13 +732,13 @@ func TestAssignmentRateLimitedAfterRepeatedFailures(t *testing.T) {
 	for i := 0; i < assignmentFailureLimit; i++ {
 		h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
 			"job_id":             jobID,
-			"responder_owner_id": "acct_missing",
+			"responder_id": "acct_missing",
 		}, http.StatusNotFound, nil)
 	}
 
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
 		"job_id":             jobID,
-		"responder_owner_id": "acct_missing",
+		"responder_id": "acct_missing",
 	}, http.StatusTooManyRequests, nil)
 }
 
@@ -737,7 +755,7 @@ func TestPrompterCannotSendNewMessageWhileFeedbackIsPending(t *testing.T) {
 
 	h.requestJSON(t, http.MethodPost, "/assignments", prompter.apiKey, map[string]any{
 		"job_id":             jobID,
-		"responder_owner_id": responder.accountID,
+		"responder_id": responder.accountID,
 	}, http.StatusCreated, nil)
 
 	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/reply", responder.apiKey, map[string]any{
@@ -797,7 +815,7 @@ func TestSessionStateTracksPromptToFeedbackCycle(t *testing.T) {
 
 	h.requestJSON(t, http.MethodPost, "/assignments", prompter.apiKey, map[string]any{
 		"job_id":             jobID,
-		"responder_owner_id": responder.accountID,
+		"responder_id": responder.accountID,
 	}, http.StatusCreated, nil)
 
 	var working struct {
@@ -985,7 +1003,7 @@ INSERT INTO jobs(
 )
 VALUES ($1,$2,$3,'account',$4,'completed',$5,$5,$5,$6,0,2,'up',$7)`,
 		jobID, sessionID, requestMessageID, prompter.accountID, now.Add(-2*time.Hour), responseMessageID, now.Add(-80*time.Minute))
-	h.execSQL(t, `INSERT INTO assignments(id, job_id, dispatcher_owner_type, dispatcher_owner_id, responder_owner_type, responder_owner_id, assigned_at, deadline_at, status) VALUES ($1,$2,'account',$3,'account',$4,$5,$6,'success')`,
+h.execSQL(t, `INSERT INTO assignments(id, job_id, dispatcher_owner_type, dispatcher_owner_id, responder_owner_type, responder_owner_id, assigned_at, deadline_at, status) VALUES ($1,$2,'account',$3,'account',$4,$5,$6,'success')`,
 		assignmentID, jobID, dispatcher.accountID, responder.accountID, now.Add(-100*time.Minute), now.Add(-95*time.Minute))
 
 	messagesBefore := h.scalarInt(t, `SELECT COUNT(*)::int FROM messages WHERE session_id = $1`, sessionID)
@@ -1433,7 +1451,7 @@ func TestAccountHookRegisterVerifyToggleAndAssignmentVisibility(t *testing.T) {
 	jobID := h.postMessage(t, prompter.apiKey, sessionID, "assign me if you can")
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
 		"job_id":             jobID,
-		"responder_owner_id": responder.accountID,
+		"responder_id": responder.accountID,
 	}, http.StatusConflict, nil)
 
 	h.requestJSON(t, http.MethodPost, "/account/hook/enable", responder.apiKey, nil, http.StatusOK, &hookResponse)
@@ -1473,7 +1491,7 @@ func TestAccountHookRegisterVerifyToggleAndAssignmentVisibility(t *testing.T) {
 	jobID = h.postMessage(t, prompter.apiKey, sessionID, "assign me if you can")
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
 		"job_id":             jobID,
-		"responder_owner_id": responder.accountID,
+		"responder_id": responder.accountID,
 	}, http.StatusConflict, nil)
 }
 
@@ -1555,7 +1573,7 @@ func TestAccountHookDeliversAssignmentAndReplyNotifications(t *testing.T) {
 
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
 		"job_id":             jobID,
-		"responder_owner_id": responder.accountID,
+		"responder_id": responder.accountID,
 	}, http.StatusCreated, nil)
 
 	if len(deliveries) != 1 {
@@ -1817,7 +1835,7 @@ func TestSessionDispatchSnippetStoredOnMessageAndReply(t *testing.T) {
 	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
 	h.requestJSON(t, http.MethodPost, "/assignments", prompter.apiKey, map[string]any{
 		"job_id":             jobID,
-		"responder_owner_id": responder.accountID,
+		"responder_id": responder.accountID,
 	}, http.StatusOK, nil)
 	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/reply", responder.apiKey, map[string]any{
 		"content": "first reply",
@@ -2298,7 +2316,7 @@ func TestResponderCancelsAssignedJobRefundsResponderStakeAndPartiallyRefundsDisp
 	}
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
 		"job_id":             jobID,
-		"responder_owner_id": responder.accountID,
+		"responder_id": responder.accountID,
 	}, http.StatusCreated, &assignment)
 
 	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/responder-cancel", responder.apiKey, map[string]any{
@@ -2421,7 +2439,7 @@ func TestDirectAssignmentResponderWorkReturnsAssignedJob(t *testing.T) {
 	}
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
 		"job_id":             jobID,
-		"responder_owner_id": responder.accountID,
+		"responder_id": responder.accountID,
 	}, http.StatusCreated, &assignment)
 
 	var work struct {
@@ -2464,7 +2482,7 @@ func TestDirectAssignmentBadVoteConsumesHeldDispatcherStakeWithoutGoingNegative(
 	}
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
 		"job_id":             jobID,
-		"responder_owner_id": responder.accountID,
+		"responder_id": responder.accountID,
 	}, http.StatusCreated, &assignment)
 
 	if got := h.walletBalance(t, dispatcher.apiKey); math.Abs(got-0.0) > 1e-9 {
@@ -2510,7 +2528,7 @@ func TestAssignmentTimeoutReturnsJobToSystemPool(t *testing.T) {
 	}
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
 		"job_id":             jobID,
-		"responder_owner_id": responder.accountID,
+		"responder_id": responder.accountID,
 	}, http.StatusCreated, &assignment)
 
 	h.execSQL(t, `UPDATE assignments SET deadline_at = now() - interval '1 second' WHERE id = $1`, assignment.ID)
