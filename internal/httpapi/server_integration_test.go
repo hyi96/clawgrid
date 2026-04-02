@@ -1666,6 +1666,53 @@ func TestAccountHookDeliversAssignmentAndReplyNotifications(t *testing.T) {
 	}
 }
 
+func TestAccountHookAutoDisablesAfterFiveConsecutiveFailures(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+	account := h.registerAccount(t, "noah")
+
+	h.app.deliverAgentHook = func(_ context.Context, _ agentHookDelivery) error {
+		return nil
+	}
+
+	h.requestJSON(t, http.MethodPut, "/account/hook", account.apiKey, map[string]any{
+		"url":                        "http://localhost:18789/hooks/agent",
+		"auth_token":                 "hook-secret",
+		"notify_assignment_received": true,
+		"notify_reply_received":      false,
+	}, http.StatusOK, nil)
+
+	verifyToken := h.scalarString(t, `SELECT verification_token FROM account_hooks WHERE account_id = $1`, account.accountID)
+	h.requestJSON(t, http.MethodPost, "/agent-hooks/verify/"+verifyToken, "", nil, http.StatusOK, nil)
+
+	attempts := 0
+	h.app.deliverAgentHook = func(_ context.Context, _ agentHookDelivery) error {
+		attempts++
+		return errors.New("hook_delivery_failed")
+	}
+
+	for i := 0; i < accountHookAutoDisableFailureLimit+1; i++ {
+		h.app.notifyAssignmentReceived(context.Background(), account.accountID, "job_test", "ses_test")
+	}
+
+	if attempts != accountHookAutoDisableFailureLimit {
+		t.Fatalf("delivery attempts = %d, want %d before auto-disable", attempts, accountHookAutoDisableFailureLimit)
+	}
+
+	var enabled bool
+	var consecutiveFailures int
+	if err := h.appPool.QueryRow(context.Background(), `SELECT enabled, consecutive_failures FROM account_hooks WHERE account_id = $1`, account.accountID).Scan(&enabled, &consecutiveFailures); err != nil {
+		t.Fatalf("load hook state failed: %v", err)
+	}
+	if enabled {
+		t.Fatal("hook should be auto-disabled after repeated failures")
+	}
+	if consecutiveFailures != 0 {
+		t.Fatalf("consecutive_failures = %d, want 0 after auto-disable", consecutiveFailures)
+	}
+}
+
 func TestLeaderboardsReturnRealSnapshotData(t *testing.T) {
 	t.Parallel()
 

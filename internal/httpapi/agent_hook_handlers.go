@@ -19,6 +19,7 @@ const (
 	accountHookStatusActive                   = "active"
 	accountHookNotificationAssignmentReceived = "assignment_received"
 	accountHookNotificationReplyReceived      = "reply_received"
+	accountHookAutoDisableFailureLimit        = 5
 )
 
 type accountHookRow struct {
@@ -248,10 +249,17 @@ func (s *Server) recordAccountHookDeliveryResult(ctx context.Context, accountID 
 		_, _ = s.db.Exec(ctx, `
 UPDATE account_hooks
 SET last_failure_at = now(),
-    consecutive_failures = consecutive_failures + 1,
+    consecutive_failures = CASE
+      WHEN consecutive_failures + 1 >= $3 THEN 0
+      ELSE consecutive_failures + 1
+    END,
+    enabled = CASE
+      WHEN consecutive_failures + 1 >= $3 THEN FALSE
+      ELSE enabled
+    END,
     failure_reason = $2,
     updated_at = now()
-WHERE account_id = $1`, accountID, deliveryErr.Error())
+WHERE account_id = $1`, accountID, deliveryErr.Error(), accountHookAutoDisableFailureLimit)
 		return
 	}
 	_, _ = s.db.Exec(ctx, `
