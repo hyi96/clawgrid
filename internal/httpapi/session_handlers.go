@@ -84,7 +84,18 @@ func (s *Server) handleSessionState(w http.ResponseWriter, r *http.Request, acto
 
 func (s *Server) handleSessionsList(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
 	rows, err := s.db.Query(r.Context(), `
-SELECT s.id, s.created_at, COALESCE(MAX(m.created_at), s.created_at) AS updated_at, COUNT(m.id)::int, COALESCE(s.title, '')
+SELECT s.id,
+       s.created_at,
+       COALESCE(MAX(m.created_at), s.created_at) AS updated_at,
+       COUNT(m.id)::int,
+       COALESCE(s.title, ''),
+       EXISTS(
+         SELECT 1
+         FROM jobs j
+         WHERE j.session_id = s.id
+           AND j.response_message_id IS NOT NULL
+           AND j.prompter_vote IS NULL
+       ) AS pending_feedback
 FROM sessions s
 LEFT JOIN messages m ON m.session_id = s.id
 WHERE s.owner_type = $1 AND s.owner_id = $2 AND s.deleted_at IS NULL
@@ -101,13 +112,15 @@ LIMIT 100`, string(actor.OwnerType), actor.OwnerID)
 		var id, title string
 		var created, updated time.Time
 		var messageCount int
-		_ = rows.Scan(&id, &created, &updated, &messageCount, &title)
+		var pendingFeedback bool
+		_ = rows.Scan(&id, &created, &updated, &messageCount, &title, &pendingFeedback)
 		items = append(items, map[string]any{
-			"id":            id,
-			"title":         title,
-			"created_at":    created,
-			"updated_at":    updated,
-			"message_count": messageCount,
+			"id":               id,
+			"title":            title,
+			"created_at":       created,
+			"updated_at":       updated,
+			"message_count":    messageCount,
+			"pending_feedback": pendingFeedback,
 		})
 	}
 	respondJSON(w, http.StatusOK, map[string]any{"items": items})

@@ -16,6 +16,7 @@ type SessionItem = {
   created_at: string;
   updated_at: string;
   message_count: number;
+  pending_feedback?: boolean;
 };
 
 type MessageItem = {
@@ -672,7 +673,16 @@ function AskPage({ auth }: { auth: AuthState | null }) {
                 onClick={() => setSelectedSessionId(s.id)}
                 title={s.title?.trim() ? s.title : s.id}
               >
-                {s.title?.trim() ? s.title : s.id}
+                {s.pending_feedback && (
+                  <span
+                    className="session-feedback-flag"
+                    title="this session is waiting for feedback on the latest responder reply"
+                    aria-label="this session is waiting for feedback on the latest responder reply"
+                  >
+                    !
+                  </span>
+                )}
+                <span className="session-main-label">{s.title?.trim() ? s.title : s.id}</span>
               </button>
               <button
                 className="session-more"

@@ -1430,14 +1430,40 @@ textarea:disabled {
   text-align: left;
   flex: 1;
   min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 0;
 }
 
 .session-item:hover .session-main {
   color: #f5fbff;
+}
+
+.session-main-label {
+  min-width: 0;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-feedback-flag {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid #b68a31;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent 35%),
+    linear-gradient(180deg, #5e4722 0%, #473316 100%);
+  box-shadow: var(--shadow-1);
+  color: #f7d36e;
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 700;
+  cursor: help;
+  flex: 0 0 auto;
 }
 
 .session-more {

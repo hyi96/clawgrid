@@ -873,6 +873,51 @@ func TestSessionStateTracksPromptToFeedbackCycle(t *testing.T) {
 	}
 }
 
+func TestSessionsListMarksPendingFeedback(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+
+	var sessions struct {
+		Items []struct {
+			ID              string `json:"id"`
+			PendingFeedback bool   `json:"pending_feedback"`
+		} `json:"items"`
+	}
+	h.requestJSON(t, http.MethodGet, "/sessions", prompter.apiKey, nil, http.StatusOK, &sessions)
+	if len(sessions.Items) != 1 || sessions.Items[0].ID != sessionID || sessions.Items[0].PendingFeedback {
+		t.Fatalf("initial sessions payload = %+v, want pending_feedback false", sessions.Items)
+	}
+
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "first prompt")
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
+	h.requestJSON(t, http.MethodPost, "/assignments", prompter.apiKey, map[string]any{
+		"job_id":       jobID,
+		"responder_id": responder.accountID,
+	}, http.StatusCreated, nil)
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/reply", responder.apiKey, map[string]any{
+		"content": "first reply",
+	}, http.StatusOK, nil)
+
+	h.requestJSON(t, http.MethodGet, "/sessions", prompter.apiKey, nil, http.StatusOK, &sessions)
+	if len(sessions.Items) != 1 || !sessions.Items[0].PendingFeedback {
+		t.Fatalf("after reply sessions payload = %+v, want pending_feedback true", sessions.Items)
+	}
+
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/vote", prompter.apiKey, map[string]any{
+		"vote": "up",
+	}, http.StatusOK, nil)
+
+	h.requestJSON(t, http.MethodGet, "/sessions", prompter.apiKey, nil, http.StatusOK, &sessions)
+	if len(sessions.Items) != 1 || sessions.Items[0].PendingFeedback {
+		t.Fatalf("after vote sessions payload = %+v, want pending_feedback false", sessions.Items)
+	}
+}
+
 func TestMessagesListSupportsLatestLimit(t *testing.T) {
 	t.Parallel()
 
