@@ -1909,7 +1909,8 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
       setAgentHookNotifyReply(data.hook.notify_reply_received);
       setError("");
     } catch (e) {
-      setError((e as Error).message);
+      const message = (e as Error).message;
+      setError(message === "hook_reverification_required" ? "save + reverify the hook before changing its enabled state" : message);
     }
   };
 
@@ -2089,11 +2090,16 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
       <section className="account-panel">
         <div className="account-api-head">
           <p className="account-panel-label">
-            agent hook <InfoFlag text="advanced feature. Clawgrid sends a minimal OpenClaw-style hook payload with just name and message. assignment received must be enabled and verified for this account to appear in direct-assignment availability. if both notification types are off, the hook is configured but will not be used." />
+            agent hook <InfoFlag text="advanced feature. Clawgrid sends a minimal OpenClaw-style hook payload with just name and message. assignment notifications must be enabled and verified for this account to appear in direct-assignment availability. if both notification types are off, the hook is configured but unused. after 5 consecutive delivery failures, Clawgrid automatically disables the hook, clears verification, and requires save + reverify again." />
           </p>
           <div className="account-key-actions">
             {agentHook && (
-              <button className="account-btn small" onClick={() => void setAgentHookEnabled(!agentHook.enabled)}>
+              <button
+                className="account-btn small"
+                onClick={() => void setAgentHookEnabled(!agentHook.enabled)}
+                disabled={agentHook.status !== "active"}
+                title={agentHook.status !== "active" ? "save + reverify the hook before changing its enabled state" : undefined}
+              >
                 {agentHook.enabled ? "disable" : "enable"}
               </button>
             )}
@@ -2104,6 +2110,9 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
             )}
           </div>
         </div>
+        {agentHook && agentHook.status !== "active" && (
+          <p className="account-muted">save + reverify the hook before changing its enabled state.</p>
+        )}
 
         <div className="account-hook-form">
           <input
@@ -2120,13 +2129,16 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
             value={agentHookToken}
             onChange={(e) => setAgentHookToken(e.target.value)}
           />
+          <button className="account-btn small" onClick={() => void saveAgentHook()}>
+            {agentHook ? "save + reverify" : "register hook"}
+          </button>
           <label className="account-hook-flag">
             <input
               type="checkbox"
               checked={agentHookNotifyAssignment}
               onChange={(e) => setAgentHookNotifyAssignment(e.target.checked)}
             />
-            <span>assignment received</span>
+            <span>send assignment notification</span>
           </label>
           <label className="account-hook-flag">
             <input
@@ -2134,18 +2146,12 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
               checked={agentHookNotifyReply}
               onChange={(e) => setAgentHookNotifyReply(e.target.checked)}
             />
-            <span>reply received</span>
+            <span>send reply notification</span>
           </label>
-          <button className="account-btn small" onClick={() => void saveAgentHook()}>
-            {agentHook ? "save + reverify" : "register hook"}
-          </button>
         </div>
 
         <div className="account-hook-meta">
           <p className="account-muted">status: {agentHook?.status ?? "not configured"}</p>
-          {agentHook && <p className="account-muted">enabled: {agentHook.enabled ? "yes" : "no"}</p>}
-          {agentHook && <p className="account-muted">assignment notifications: {agentHook.notify_assignment_received ? "yes" : "no"}</p>}
-          {agentHook && <p className="account-muted">reply notifications: {agentHook.notify_reply_received ? "yes" : "no"}</p>}
           {agentHook?.verification_requested_at && <p className="account-muted">verification requested: {fmtTime(agentHook.verification_requested_at)}</p>}
           {agentHook?.verified_at && <p className="account-muted">verified: {fmtTime(agentHook.verified_at)}</p>}
           {agentHook?.last_failure_at && <p className="account-muted">last failure: {fmtTime(agentHook.last_failure_at)}</p>}

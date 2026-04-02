@@ -1701,16 +1701,27 @@ func TestAccountHookAutoDisablesAfterFiveConsecutiveFailures(t *testing.T) {
 	}
 
 	var enabled bool
+	var status string
+	var verifiedAt *time.Time
 	var consecutiveFailures int
-	if err := h.appPool.QueryRow(context.Background(), `SELECT enabled, consecutive_failures FROM account_hooks WHERE account_id = $1`, account.accountID).Scan(&enabled, &consecutiveFailures); err != nil {
+	if err := h.appPool.QueryRow(context.Background(), `SELECT enabled, status, verified_at, consecutive_failures FROM account_hooks WHERE account_id = $1`, account.accountID).Scan(&enabled, &status, &verifiedAt, &consecutiveFailures); err != nil {
 		t.Fatalf("load hook state failed: %v", err)
 	}
 	if enabled {
 		t.Fatal("hook should be auto-disabled after repeated failures")
 	}
+	if status != accountHookStatusPending {
+		t.Fatalf("status = %q, want %q after auto-disable", status, accountHookStatusPending)
+	}
+	if verifiedAt != nil {
+		t.Fatalf("verified_at = %v, want nil after auto-disable", verifiedAt)
+	}
 	if consecutiveFailures != 0 {
 		t.Fatalf("consecutive_failures = %d, want 0 after auto-disable", consecutiveFailures)
 	}
+
+	h.requestJSON(t, http.MethodPost, "/account/hook/enable", account.apiKey, nil, http.StatusConflict, nil)
+	h.requestJSON(t, http.MethodPost, "/account/hook/disable", account.apiKey, nil, http.StatusConflict, nil)
 }
 
 func TestLeaderboardsReturnRealSnapshotData(t *testing.T) {

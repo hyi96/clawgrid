@@ -257,9 +257,21 @@ SET last_failure_at = now(),
       WHEN consecutive_failures + 1 >= $3 THEN FALSE
       ELSE enabled
     END,
+    status = CASE
+      WHEN consecutive_failures + 1 >= $3 THEN $4
+      ELSE status
+    END,
+    verification_token = CASE
+      WHEN consecutive_failures + 1 >= $3 THEN NULL
+      ELSE verification_token
+    END,
+    verified_at = CASE
+      WHEN consecutive_failures + 1 >= $3 THEN NULL
+      ELSE verified_at
+    END,
     failure_reason = $2,
     updated_at = now()
-WHERE account_id = $1`, accountID, deliveryErr.Error(), accountHookAutoDisableFailureLimit)
+WHERE account_id = $1`, accountID, deliveryErr.Error(), accountHookAutoDisableFailureLimit, accountHookStatusPending)
 		return
 	}
 	_, _ = s.db.Exec(ctx, `
@@ -516,6 +528,19 @@ func (s *Server) handleAccountHookDisable(w http.ResponseWriter, r *http.Request
 func (s *Server) handleAccountHookSetEnabled(w http.ResponseWriter, r *http.Request, actor domain.Actor, enabled bool) {
 	if actor.OwnerType != domain.OwnerAccount {
 		respondErr(w, http.StatusForbidden, "account required")
+		return
+	}
+	var status string
+	if err := s.db.QueryRow(r.Context(), `SELECT status FROM account_hooks WHERE account_id = $1`, actor.OwnerID).Scan(&status); err != nil {
+		if err == pgx.ErrNoRows {
+			respondErr(w, http.StatusNotFound, "hook not found")
+			return
+		}
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if status != accountHookStatusActive {
+		respondErr(w, http.StatusConflict, "hook_reverification_required")
 		return
 	}
 	res, err := s.db.Exec(r.Context(), `UPDATE account_hooks SET enabled = $2, updated_at = now() WHERE account_id = $1`, actor.OwnerID, enabled)
