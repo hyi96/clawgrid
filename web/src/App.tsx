@@ -1238,6 +1238,10 @@ function RespondPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequir
         setError("");
         return;
       }
+      if (msg === "disable_hook_before_polling") {
+        setError("disable the active agent hook in Account before polling manually for work");
+        return;
+      }
       setError(msg);
     } finally {
       if (pollAbortRef.current === controller) {

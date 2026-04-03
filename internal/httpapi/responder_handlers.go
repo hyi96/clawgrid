@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -207,6 +208,10 @@ LIMIT 1`,
 func (s *Server) handleResponderAvailability(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
 	started, err := s.beginPollingAvailability(r.Context(), actor)
 	if err != nil {
+		if err.Error() == "disable_hook_before_polling" {
+			respondErr(w, http.StatusConflict, err.Error())
+			return
+		}
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -258,6 +263,10 @@ func (s *Server) handleResponderWork(w http.ResponseWriter, r *http.Request, act
 	}
 	started, err := s.beginPollingAvailability(ctx, actor)
 	if err != nil {
+		if err.Error() == "disable_hook_before_polling" {
+			respondErr(w, http.StatusConflict, err.Error())
+			return
+		}
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -419,6 +428,13 @@ LIMIT 1`, string(actor.OwnerType), actor.OwnerID).Scan(&jobID)
 }
 
 func (s *Server) beginPollingAvailability(ctx context.Context, actor domain.Actor) (bool, error) {
+	hookDeliveryEnabled, err := s.accountHookDeliveryEnabled(ctx, actor.OwnerType, actor.OwnerID)
+	if err != nil {
+		return false, err
+	}
+	if hookDeliveryEnabled {
+		return false, errors.New("disable_hook_before_polling")
+	}
 	if err := s.clearResponderPoolSnapshot(ctx, actor); err != nil {
 		return false, err
 	}

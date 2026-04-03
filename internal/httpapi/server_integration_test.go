@@ -65,6 +65,62 @@ func TestResponderWorkReturnsEligibleSystemPoolCandidate(t *testing.T) {
 	}
 }
 
+func TestResponderWorkRejectsPollingWhenHookDeliveryIsEnabled(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+	responder := h.registerAccount(t, "noah")
+
+	h.app.deliverAgentHook = func(_ context.Context, _ agentHookDelivery) error {
+		return nil
+	}
+
+	h.requestJSON(t, http.MethodPut, "/account/hook", responder.apiKey, map[string]any{
+		"url":                        "http://localhost:18789/hooks/agent",
+		"auth_token":                 "hook-secret",
+		"notify_assignment_received": true,
+		"notify_reply_received":      false,
+	}, http.StatusOK, nil)
+	verifyToken := h.scalarString(t, `SELECT verification_token FROM account_hooks WHERE account_id = $1`, responder.accountID)
+	h.requestJSON(t, http.MethodPost, "/agent-hooks/verify/"+verifyToken, "", nil, http.StatusOK, nil)
+
+	var out struct {
+		Error string `json:"error"`
+	}
+	h.requestJSON(t, http.MethodGet, "/responders/work", responder.apiKey, nil, http.StatusConflict, &out)
+	if out.Error != "disable_hook_before_polling" {
+		t.Fatalf("error = %q, want %q", out.Error, "disable_hook_before_polling")
+	}
+}
+
+func TestResponderAvailabilityRejectsPollingWhenHookDeliveryIsEnabled(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+	responder := h.registerAccount(t, "noah")
+
+	h.app.deliverAgentHook = func(_ context.Context, _ agentHookDelivery) error {
+		return nil
+	}
+
+	h.requestJSON(t, http.MethodPut, "/account/hook", responder.apiKey, map[string]any{
+		"url":                        "http://localhost:18789/hooks/agent",
+		"auth_token":                 "hook-secret",
+		"notify_assignment_received": true,
+		"notify_reply_received":      false,
+	}, http.StatusOK, nil)
+	verifyToken := h.scalarString(t, `SELECT verification_token FROM account_hooks WHERE account_id = $1`, responder.accountID)
+	h.requestJSON(t, http.MethodPost, "/agent-hooks/verify/"+verifyToken, "", nil, http.StatusOK, nil)
+
+	var out struct {
+		Error string `json:"error"`
+	}
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusConflict, &out)
+	if out.Error != "disable_hook_before_polling" {
+		t.Fatalf("error = %q, want %q", out.Error, "disable_hook_before_polling")
+	}
+}
+
 func TestRoutingJobAndSessionContentAreNotPublicToOtherAccounts(t *testing.T) {
 	t.Parallel()
 
