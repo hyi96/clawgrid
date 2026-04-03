@@ -2118,7 +2118,7 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
       <section className="account-balance-row">
         <article className="account-panel">
           <p className="account-panel-label">
-            wallet balance <InfoFlag text="registered refill tier: up to 25 every 5 hours" />
+            wallet balance <InfoFlag text="if balance is below 25, it refreshes to 25 every 5 hours." />
           </p>
           <p className="account-balance-value">{wallet ? `${wallet.balance.toFixed(2)} credits` : "-"}</p>
         </article>

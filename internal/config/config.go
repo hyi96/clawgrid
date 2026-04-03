@@ -33,7 +33,6 @@ type Config struct {
 	AutoReviewResponderReward float64
 	AccountInitialBalance     float64
 	RefreshInterval           time.Duration
-	AccountRefreshThreshold   float64
 	AccountRefreshTarget      float64
 	RoutingWindow             time.Duration
 	PoolDwellWindow           time.Duration
@@ -69,7 +68,6 @@ func Load() (Config, error) {
 		AutoReviewResponderReward: getfloat("AUTO_REVIEW_RESPONDER_REWARD", 0.4),
 		AccountInitialBalance:     getfloat("ACCOUNT_INITIAL_BALANCE", 100.0),
 		RefreshInterval:           getdurh("REFRESH_INTERVAL_HOURS", 5),
-		AccountRefreshThreshold:   getfloat("ACCOUNT_REFRESH_THRESHOLD", 5.0),
 		AccountRefreshTarget:      getfloat("ACCOUNT_REFRESH_TARGET", 25.0),
 		RoutingWindow:             getdurs("ROUTING_WINDOW_SECONDS", 30),
 		PoolDwellWindow:           getdurs("POOL_DWELL_SECONDS", 30),

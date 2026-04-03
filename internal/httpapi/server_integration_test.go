@@ -496,7 +496,7 @@ func TestJobClaimRejectsResponderWithOtherActiveWork(t *testing.T) {
 	jobAssigned := h.postMessage(t, prompterA.apiKey, sessionA, "assigned job")
 	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
-		"job_id":             jobAssigned,
+		"job_id":       jobAssigned,
 		"responder_id": responder.accountID,
 	}, http.StatusCreated, nil)
 
@@ -647,7 +647,7 @@ func TestAssignmentRejectsUnknownResponderIdentity(t *testing.T) {
 	jobID := h.postMessage(t, prompter.apiKey, sessionID, "assign this directly")
 
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
-		"job_id":             jobID,
+		"job_id":       jobID,
 		"responder_id": "acct_missing",
 	}, http.StatusNotFound, nil)
 }
@@ -682,7 +682,7 @@ func TestAssignmentRequiresLiveResponderAvailability(t *testing.T) {
 	jobID := h.postMessage(t, prompter.apiKey, sessionID, "assign this directly")
 
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
-		"job_id":             jobID,
+		"job_id":       jobID,
 		"responder_id": responder.accountID,
 	}, http.StatusConflict, nil)
 }
@@ -702,7 +702,7 @@ func TestAssignmentRequiresDispatcherBalanceForPenaltyHold(t *testing.T) {
 	h.execSQL(t, `UPDATE wallets SET balance = 0.1 WHERE owner_type = 'account' AND owner_id = $1`, dispatcher.accountID)
 
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
-		"job_id":             jobID,
+		"job_id":       jobID,
 		"responder_id": responder.accountID,
 	}, http.StatusPaymentRequired, nil)
 
@@ -736,7 +736,7 @@ func TestCancellingResponderAvailabilityPreventsLaterAssignment(t *testing.T) {
 	h.requestJSON(t, http.MethodDelete, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
 
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
-		"job_id":             jobID,
+		"job_id":       jobID,
 		"responder_id": responder.accountID,
 	}, http.StatusConflict, nil)
 }
@@ -754,7 +754,7 @@ func TestCancellingResponderAvailabilityReturnsAssignedJobIfAssignmentWonRace(t 
 
 	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
-		"job_id":             jobID,
+		"job_id":       jobID,
 		"responder_id": responder.accountID,
 	}, http.StatusCreated, nil)
 
@@ -787,13 +787,13 @@ func TestAssignmentRateLimitedAfterRepeatedFailures(t *testing.T) {
 
 	for i := 0; i < assignmentFailureLimit; i++ {
 		h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
-			"job_id":             jobID,
+			"job_id":       jobID,
 			"responder_id": "acct_missing",
 		}, http.StatusNotFound, nil)
 	}
 
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
-		"job_id":             jobID,
+		"job_id":       jobID,
 		"responder_id": "acct_missing",
 	}, http.StatusTooManyRequests, nil)
 }
@@ -810,7 +810,7 @@ func TestPrompterCannotSendNewMessageWhileFeedbackIsPending(t *testing.T) {
 	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
 
 	h.requestJSON(t, http.MethodPost, "/assignments", prompter.apiKey, map[string]any{
-		"job_id":             jobID,
+		"job_id":       jobID,
 		"responder_id": responder.accountID,
 	}, http.StatusCreated, nil)
 
@@ -870,7 +870,7 @@ func TestSessionStateTracksPromptToFeedbackCycle(t *testing.T) {
 	}
 
 	h.requestJSON(t, http.MethodPost, "/assignments", prompter.apiKey, map[string]any{
-		"job_id":             jobID,
+		"job_id":       jobID,
 		"responder_id": responder.accountID,
 	}, http.StatusCreated, nil)
 
@@ -1104,7 +1104,7 @@ INSERT INTO jobs(
 )
 VALUES ($1,$2,$3,'account',$4,'completed',$5,$5,$5,$6,0,2,'up',$7)`,
 		jobID, sessionID, requestMessageID, prompter.accountID, now.Add(-2*time.Hour), responseMessageID, now.Add(-80*time.Minute))
-h.execSQL(t, `INSERT INTO assignments(id, job_id, dispatcher_owner_type, dispatcher_owner_id, responder_owner_type, responder_owner_id, assigned_at, deadline_at, status) VALUES ($1,$2,'account',$3,'account',$4,$5,$6,'success')`,
+	h.execSQL(t, `INSERT INTO assignments(id, job_id, dispatcher_owner_type, dispatcher_owner_id, responder_owner_type, responder_owner_id, assigned_at, deadline_at, status) VALUES ($1,$2,'account',$3,'account',$4,$5,$6,'success')`,
 		assignmentID, jobID, dispatcher.accountID, responder.accountID, now.Add(-100*time.Minute), now.Add(-95*time.Minute))
 
 	messagesBefore := h.scalarInt(t, `SELECT COUNT(*)::int FROM messages WHERE session_id = $1`, sessionID)
@@ -1551,7 +1551,7 @@ func TestAccountHookRegisterVerifyToggleAndAssignmentVisibility(t *testing.T) {
 	sessionID := h.createSession(t, prompter.apiKey)
 	jobID := h.postMessage(t, prompter.apiKey, sessionID, "assign me if you can")
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
-		"job_id":             jobID,
+		"job_id":       jobID,
 		"responder_id": responder.accountID,
 	}, http.StatusConflict, nil)
 
@@ -1591,7 +1591,7 @@ func TestAccountHookRegisterVerifyToggleAndAssignmentVisibility(t *testing.T) {
 	sessionID = h.createSession(t, prompter.apiKey)
 	jobID = h.postMessage(t, prompter.apiKey, sessionID, "assign me if you can")
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
-		"job_id":             jobID,
+		"job_id":       jobID,
 		"responder_id": responder.accountID,
 	}, http.StatusConflict, nil)
 }
@@ -1673,7 +1673,7 @@ func TestAccountHookDeliversAssignmentAndReplyNotifications(t *testing.T) {
 	jobID := h.postMessage(t, prompter.apiKey, sessionID, "please take this assignment")
 
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
-		"job_id":             jobID,
+		"job_id":       jobID,
 		"responder_id": responder.accountID,
 	}, http.StatusCreated, nil)
 
@@ -1993,7 +1993,7 @@ func TestSessionDispatchSnippetStoredOnMessageAndReply(t *testing.T) {
 
 	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
 	h.requestJSON(t, http.MethodPost, "/assignments", prompter.apiKey, map[string]any{
-		"job_id":             jobID,
+		"job_id":       jobID,
 		"responder_id": responder.accountID,
 	}, http.StatusOK, nil)
 	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/reply", responder.apiKey, map[string]any{
@@ -2474,7 +2474,7 @@ func TestResponderCancelsAssignedJobRefundsResponderStakeAndPartiallyRefundsDisp
 		ID string `json:"id"`
 	}
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
-		"job_id":             jobID,
+		"job_id":       jobID,
 		"responder_id": responder.accountID,
 	}, http.StatusCreated, &assignment)
 
@@ -2597,7 +2597,7 @@ func TestDirectAssignmentResponderWorkReturnsAssignedJob(t *testing.T) {
 		ID string `json:"id"`
 	}
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
-		"job_id":             jobID,
+		"job_id":       jobID,
 		"responder_id": responder.accountID,
 	}, http.StatusCreated, &assignment)
 
@@ -2640,7 +2640,7 @@ func TestDirectAssignmentBadVoteConsumesHeldDispatcherStakeWithoutGoingNegative(
 		ID string `json:"id"`
 	}
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
-		"job_id":             jobID,
+		"job_id":       jobID,
 		"responder_id": responder.accountID,
 	}, http.StatusCreated, &assignment)
 
@@ -2686,7 +2686,7 @@ func TestAssignmentTimeoutReturnsJobToSystemPool(t *testing.T) {
 		ID string `json:"id"`
 	}
 	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
-		"job_id":             jobID,
+		"job_id":       jobID,
 		"responder_id": responder.accountID,
 	}, http.StatusCreated, &assignment)
 
@@ -2981,7 +2981,6 @@ func newIntegrationHarnessWithConfig(t *testing.T, mutate func(*config.Config)) 
 		AutoReviewResponderReward: 0.4,
 		AccountInitialBalance:     100,
 		RefreshInterval:           5 * time.Hour,
-		AccountRefreshThreshold:   5,
 		AccountRefreshTarget:      25,
 		RoutingWindow:             0,
 		PoolDwellWindow:           60 * time.Second,

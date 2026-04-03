@@ -111,8 +111,9 @@ Wallets can be topped up automatically when they are low.
 
 This is environment-driven and controlled by:
 - refresh interval
-- threshold
 - target balance
+
+If an account balance is below the target when the refresh interval has elapsed, the worker refreshes it to the target and records a `wallet_refresh` ledger entry.
 
 The live system already uses automatic wallet refresh so accounts do not get permanently stranded at zero for ordinary testing and participation.
 

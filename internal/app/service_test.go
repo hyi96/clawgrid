@@ -343,28 +343,51 @@ func TestServiceProcessWalletRefresh(t *testing.T) {
 	recentRefresh := time.Now().Add(-1 * time.Hour)
 
 	accountRefreshID := h.insertAccount(t, "tom")
-	accountAboveThresholdID := h.insertAccount(t, "sam")
+	accountBelowTargetID := h.insertAccount(t, "sam")
+	accountAtTargetID := h.insertAccount(t, "ava")
 	accountTooRecentID := h.insertAccount(t, "noah")
 
 	h.insertWallet(t, "account", accountRefreshID, 4.0, &oldRefresh)
-	h.insertWallet(t, "account", accountAboveThresholdID, 8.0, &oldRefresh)
+	h.insertWallet(t, "account", accountBelowTargetID, 8.0, &oldRefresh)
+	h.insertWallet(t, "account", accountAtTargetID, 25.0, &oldRefresh)
 	h.insertWallet(t, "account", accountTooRecentID, 4.0, &recentRefresh)
 
 	affected, err := h.svc.ProcessWalletRefresh(context.Background())
 	if err != nil {
 		t.Fatalf("ProcessWalletRefresh: %v", err)
 	}
-	if affected != 1 {
-		t.Fatalf("affected = %d, want 1", affected)
+	if affected != 2 {
+		t.Fatalf("affected = %d, want 2", affected)
 	}
 	if got := h.walletBalance(t, "account", accountRefreshID); got != 25.0 {
 		t.Fatalf("account refresh balance = %v, want 25.0", got)
 	}
-	if got := h.walletBalance(t, "account", accountAboveThresholdID); got != 8.0 {
-		t.Fatalf("account above-threshold balance = %v, want 8.0", got)
+	if got := h.walletBalance(t, "account", accountBelowTargetID); got != 25.0 {
+		t.Fatalf("account below-target balance = %v, want 25.0", got)
+	}
+	if got := h.walletBalance(t, "account", accountAtTargetID); got != 25.0 {
+		t.Fatalf("account at-target balance = %v, want 25.0", got)
 	}
 	if got := h.walletBalance(t, "account", accountTooRecentID); got != 4.0 {
 		t.Fatalf("account too-recent balance = %v, want 4.0", got)
+	}
+	if got := h.ledgerCountByReason(t, "account", accountRefreshID, "wallet_refresh"); got != 1 {
+		t.Fatalf("wallet_refresh ledger count for refreshed account = %d, want 1", got)
+	}
+	if got := h.ledgerCountByReason(t, "account", accountBelowTargetID, "wallet_refresh"); got != 1 {
+		t.Fatalf("wallet_refresh ledger count for below-target account = %d, want 1", got)
+	}
+	if got := h.ledgerDeltaByReason(t, "account", accountRefreshID, "wallet_refresh"); got != 21.0 {
+		t.Fatalf("wallet_refresh delta for refreshed account = %v, want 21.0", got)
+	}
+	if got := h.ledgerDeltaByReason(t, "account", accountBelowTargetID, "wallet_refresh"); got != 17.0 {
+		t.Fatalf("wallet_refresh delta for below-target account = %v, want 17.0", got)
+	}
+	if got := h.ledgerCountByReason(t, "account", accountAtTargetID, "wallet_refresh"); got != 0 {
+		t.Fatalf("wallet_refresh ledger count for at-target account = %d, want 0", got)
+	}
+	if got := h.ledgerCountByReason(t, "account", accountTooRecentID, "wallet_refresh"); got != 0 {
+		t.Fatalf("wallet_refresh ledger count for too-recent account = %d, want 0", got)
 	}
 }
 
@@ -423,7 +446,6 @@ func newServiceHarness(t *testing.T, mutate func(*config.Config)) *serviceHarnes
 		AutoReviewResponderReward: 0.4,
 		AccountInitialBalance:     100,
 		RefreshInterval:           5 * time.Hour,
-		AccountRefreshThreshold:   5,
 		AccountRefreshTarget:      25,
 		RoutingWindow:             30 * time.Second,
 		PoolDwellWindow:           30 * time.Second,
@@ -628,6 +650,24 @@ func (h *serviceHarness) feedbackCountByContent(t *testing.T, sessionID, content
 		t.Fatalf("feedbackCountByContent: %v", err)
 	}
 	return count
+}
+
+func (h *serviceHarness) ledgerCountByReason(t *testing.T, ownerType, ownerID, reason string) int {
+	t.Helper()
+	var count int
+	if err := h.appPool.QueryRow(context.Background(), `SELECT COUNT(*)::int FROM wallet_ledger WHERE owner_type = $1 AND owner_id = $2 AND reason = $3`, ownerType, ownerID, reason).Scan(&count); err != nil {
+		t.Fatalf("ledgerCountByReason: %v", err)
+	}
+	return count
+}
+
+func (h *serviceHarness) ledgerDeltaByReason(t *testing.T, ownerType, ownerID, reason string) float64 {
+	t.Helper()
+	var delta float64
+	if err := h.appPool.QueryRow(context.Background(), `SELECT delta FROM wallet_ledger WHERE owner_type = $1 AND owner_id = $2 AND reason = $3 ORDER BY created_at DESC, id DESC LIMIT 1`, ownerType, ownerID, reason).Scan(&delta); err != nil {
+		t.Fatalf("ledgerDeltaByReason: %v", err)
+	}
+	return delta
 }
 
 func (h *serviceHarness) execSQL(t *testing.T, query string, args ...any) {

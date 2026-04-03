@@ -245,21 +245,59 @@ func (s *Service) ProcessWalletRefresh(ctx context.Context) (int64, error) {
 	}
 	defer tx.Rollback(ctx)
 
-	res, err := tx.Exec(ctx, `
+	rows, err := tx.Query(ctx, `
+SELECT owner_id, balance
+FROM wallets
+WHERE owner_type = 'account'
+  AND balance < $1
+  AND (last_refresh_at IS NULL OR last_refresh_at <= now() - make_interval(hours => $2::int))
+FOR UPDATE`, s.Cfg.AccountRefreshTarget, int(s.Cfg.RefreshInterval.Hours()))
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	type refreshTarget struct {
+		ownerID string
+		balance float64
+	}
+	targets := make([]refreshTarget, 0)
+	for rows.Next() {
+		var item refreshTarget
+		if err := rows.Scan(&item.ownerID, &item.balance); err != nil {
+			return 0, err
+		}
+		targets = append(targets, item)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	rows.Close()
+
+	var affected int64
+	for _, item := range targets {
+		delta := s.Cfg.AccountRefreshTarget - item.balance
+		if delta <= 0 {
+			continue
+		}
+		if _, err := tx.Exec(ctx, `
 UPDATE wallets
 SET balance = $1,
     last_refresh_at = now()
 WHERE owner_type = 'account'
-  AND balance < $2
-  AND (last_refresh_at IS NULL OR last_refresh_at <= now() - make_interval(hours => $3::int));`, s.Cfg.AccountRefreshTarget, s.Cfg.AccountRefreshThreshold, int(s.Cfg.RefreshInterval.Hours()))
-	if err != nil {
-		return 0, err
+  AND owner_id = $2`, s.Cfg.AccountRefreshTarget, item.ownerID); err != nil {
+			return 0, err
+		}
+		if err := s.ledgerTx(ctx, tx, domain.OwnerAccount, item.ownerID, delta, "wallet_refresh", nil, nil); err != nil {
+			return 0, err
+		}
+		affected++
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
-	return res.RowsAffected(), nil
+	return affected, nil
 }
 
 func (s *Service) ProcessRateLimitCleanup(ctx context.Context) (int64, error) {
