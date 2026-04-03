@@ -143,6 +143,15 @@ type WalletInfo = {
   last_refresh_at?: string;
 };
 
+type WalletLedgerItem = {
+  id: string;
+  delta: number;
+  reason: string;
+  created_at: string;
+  job_id?: string;
+  assignment_id?: string;
+};
+
 type AccountStats = {
   job_success_rate: string;
   feedback_rate: string;
@@ -173,6 +182,7 @@ const DISPATCH_JOB_SLOTS = 4;
 const DISPATCH_RESPONDER_SLOTS = 5;
 const REPO_URL = "https://github.com/hyi96/clawgrid";
 const RESPONDER_CANCEL_REASON_LIMIT = 40;
+const ACCOUNT_LEDGER_PAGE_SIZE = 20;
 const RESPONDER_CANCEL_REASONS = [
   "risky/unsafe prompt",
   "not a good fit",
@@ -272,6 +282,10 @@ function responderWaitEndsAtMs(responder: AvailableResponder): number {
 
 function recentCancelTooltip(reason: string): string {
   return `this job was recently cancelled due to "${reason}"`;
+}
+
+function formatLedgerDelta(delta: number): string {
+  return `${delta >= 0 ? "+" : ""}${delta.toFixed(2)}`;
 }
 
 function InfoFlag({ text, className = "" }: { text: string; className?: string }) {
@@ -1728,6 +1742,10 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
   const [agentHookNotifyAssignment, setAgentHookNotifyAssignment] = useState(true);
   const [agentHookNotifyReply, setAgentHookNotifyReply] = useState(false);
   const [stats, setStats] = useState<AccountStats | null>(null);
+  const [ledgerItems, setLedgerItems] = useState<WalletLedgerItem[]>([]);
+  const [ledgerHasMoreOlder, setLedgerHasMoreOlder] = useState(false);
+  const [ledgerNextBeforeID, setLedgerNextBeforeID] = useState("");
+  const [ledgerBusy, setLedgerBusy] = useState(false);
   const [error, setError] = useState("");
   const [responderDescription, setResponderDescription] = useState("");
   const oauthCompletionHandledRef = useRef(false);
@@ -1792,12 +1810,16 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
   const loadAccountData = async () => {
     if (!auth || auth.mode !== "account") return;
     try {
-      const [me, walletData, keyData, hookData, statsData] = await Promise.all([
+      const [me, walletData, keyData, hookData, statsData, ledgerData] = await Promise.all([
         api<{ id: string; name: string; github_login?: string; avatar_url?: string; responder_description?: string }>("/account/me", auth),
         api<WalletInfo>("/wallets/current", auth),
         api<{ items: ApiKeyItem[] }>("/account/api-keys", auth),
         api<{ hook: AgentHookInfo | null }>("/account/hook", auth),
         api<AccountStats>("/account/stats", auth),
+        api<{ items: WalletLedgerItem[]; has_more_older: boolean; next_before_id: string }>(
+          `/wallets/current/ledger?limit=${ACCOUNT_LEDGER_PAGE_SIZE}`,
+          auth,
+        ),
       ]);
       setAccountID(me.id);
       setAccountName(me.name);
@@ -1810,8 +1832,30 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
       setAgentHookNotifyAssignment(hookData.hook?.notify_assignment_received ?? true);
       setAgentHookNotifyReply(hookData.hook?.notify_reply_received ?? false);
       setStats(statsData);
+      setLedgerItems(ledgerData.items);
+      setLedgerHasMoreOlder(ledgerData.has_more_older);
+      setLedgerNextBeforeID(ledgerData.next_before_id ?? "");
     } catch (e) {
       setError((e as Error).message);
+    }
+  };
+
+  const loadOlderLedger = async () => {
+    if (!auth || auth.mode !== "account" || !ledgerHasMoreOlder || !ledgerNextBeforeID || ledgerBusy) return;
+    setLedgerBusy(true);
+    try {
+      const data = await api<{ items: WalletLedgerItem[]; has_more_older: boolean; next_before_id: string }>(
+        `/wallets/current/ledger?limit=${ACCOUNT_LEDGER_PAGE_SIZE}&before_id=${encodeURIComponent(ledgerNextBeforeID)}`,
+        auth,
+      );
+      setLedgerItems((current) => [...current, ...data.items]);
+      setLedgerHasMoreOlder(data.has_more_older);
+      setLedgerNextBeforeID(data.next_before_id ?? "");
+      setError("");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLedgerBusy(false);
     }
   };
 
@@ -2095,6 +2139,35 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
             <button className="account-btn small" onClick={() => void saveResponderDescription()}>save blurb</button>
           </div>
         </article>
+      </section>
+
+      <section className="account-panel">
+        <div className="account-api-head">
+          <p className="account-panel-label">wallet ledger</p>
+          {ledgerHasMoreOlder && (
+            <button className="account-btn small" onClick={() => void loadOlderLedger()} disabled={ledgerBusy}>
+              {ledgerBusy ? "loading..." : "load older"}
+            </button>
+          )}
+        </div>
+        <div className="account-ledger-list">
+          {ledgerItems.map((entry) => (
+            <div className="account-ledger-row" key={entry.id}>
+              <div className="account-ledger-main">
+                <p className={`account-ledger-delta ${entry.delta >= 0 ? "positive" : "negative"}`}>
+                  {formatLedgerDelta(entry.delta)}
+                </p>
+                <p className="account-ledger-reason">{entry.reason}</p>
+              </div>
+              <div className="account-ledger-meta">
+                <p className="account-muted">{fmtTime(entry.created_at)}</p>
+                {entry.job_id && <p className="account-muted">job: {entry.job_id}</p>}
+                {entry.assignment_id && <p className="account-muted">assignment: {entry.assignment_id}</p>}
+              </div>
+            </div>
+          ))}
+          {!ledgerItems.length && <div className="account-ledger-empty">no ledger entries yet</div>}
+        </div>
       </section>
 
       <section className="account-panel">

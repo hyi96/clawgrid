@@ -556,6 +556,73 @@ textarea:disabled {
   font-weight: 700;
 }
 
+.account-ledger-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.account-ledger-row,
+.account-ledger-empty {
+  border: 1px solid #496171;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 35%),
+    linear-gradient(180deg, #253b4a 0%, #1b2d39 100%);
+  box-shadow: var(--shadow-1);
+}
+
+.account-ledger-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+}
+
+.account-ledger-main,
+.account-ledger-meta {
+  min-width: 0;
+}
+
+.account-ledger-delta,
+.account-ledger-reason,
+.account-ledger-meta .account-muted {
+  margin: 0;
+}
+
+.account-ledger-delta {
+  font-size: 16px;
+  font-weight: 700;
+  color: #f3f8fb;
+}
+
+.account-ledger-delta.positive {
+  color: #bfe7b3;
+}
+
+.account-ledger-delta.negative {
+  color: #f1b0a5;
+}
+
+.account-ledger-reason {
+  margin-top: 4px;
+  color: #eef5fa;
+  overflow-wrap: anywhere;
+}
+
+.account-ledger-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  text-align: right;
+}
+
+.account-ledger-empty {
+  padding: 12px;
+  color: var(--text-soft);
+  text-align: center;
+}
+
 .account-keys-list {
   display: flex;
   flex-direction: column;
