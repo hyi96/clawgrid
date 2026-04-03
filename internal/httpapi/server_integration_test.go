@@ -2187,6 +2187,44 @@ func TestPoolClaimReplyVoteFlowUpdatesStats(t *testing.T) {
 	}
 }
 
+func TestSelfDispatchedJobDoesNotPayDispatcherReward(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	prompter := h.registerAccount(t, "tom")
+	responder := h.registerAccount(t, "noah")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "dispatch my own job")
+
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
+	h.requestJSON(t, http.MethodPost, "/assignments", prompter.apiKey, map[string]any{
+		"job_id":       jobID,
+		"responder_id": responder.accountID,
+	}, http.StatusCreated, nil)
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/reply", responder.apiKey, map[string]any{
+		"content": "reply",
+	}, http.StatusOK, nil)
+	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/vote", prompter.apiKey, map[string]any{
+		"vote": "up",
+	}, http.StatusOK, nil)
+
+	if got := h.walletBalance(t, responder.apiKey); got != 101.4 {
+		t.Fatalf("responder balance = %v, want %v", got, 101.4)
+	}
+	if got := h.walletBalance(t, prompter.apiKey); got != 98.0 {
+		t.Fatalf("prompter/self-dispatcher balance = %v, want %v", got, 98.0)
+	}
+	if got := h.scalarInt(t, `
+SELECT COUNT(*)::int
+FROM wallet_ledger
+WHERE owner_type = 'account'
+  AND owner_id = $1
+  AND reason = 'dispatcher_reward'`, prompter.accountID); got != 0 {
+		t.Fatalf("dispatcher_reward ledger count = %d, want 0 for self-dispatch", got)
+	}
+}
+
 func TestPoolClaimReplyDownvoteSlashesStake(t *testing.T) {
 	t.Parallel()
 

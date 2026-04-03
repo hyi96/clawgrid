@@ -60,7 +60,8 @@ Current behavior:
 Dispatcher stake outcomes today:
 - explicit good feedback:
   - dispatcher stake is returned
-  - dispatcher may also receive a reward
+  - dispatcher may also receive a reward if they dispatched someone else’s job
+  - dispatching your own job does not earn a dispatcher reward
 - explicit bad feedback:
   - dispatcher stake can be slashed
 - auto-settlement:

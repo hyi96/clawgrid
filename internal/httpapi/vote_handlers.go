@@ -52,6 +52,7 @@ func (s *Server) handleJobVote(w http.ResponseWriter, r *http.Request, actor dom
 	_ = tx.QueryRow(r.Context(), `SELECT owner_type, owner_id FROM messages WHERE id = (SELECT response_message_id FROM jobs WHERE id = $1)`, jobID).Scan(&responderType, &responderID)
 	var asnID, dispatcherType, dispatcherID string
 	_ = tx.QueryRow(r.Context(), `SELECT id, dispatcher_owner_type, dispatcher_owner_id FROM assignments WHERE job_id = $1 ORDER BY assigned_at DESC LIMIT 1`, jobID).Scan(&asnID, &dispatcherType, &dispatcherID)
+	isSelfDispatched := dispatcherType == ownerType && dispatcherID == ownerID
 
 	if body.Vote == "up" {
 		_, _ = tx.Exec(r.Context(), `UPDATE jobs SET prompter_vote = 'up', status = 'completed' WHERE id = $1`, jobID)
@@ -64,8 +65,10 @@ func (s *Server) handleJobVote(w http.ResponseWriter, r *http.Request, actor dom
 		}
 		if dispatcherID != "" {
 			_ = s.refundDispatcherStake(r.Context(), tx, jobID, domain.OwnerType(dispatcherType), dispatcherID)
-			_ = s.adjustWallet(r.Context(), tx, domain.OwnerType(dispatcherType), dispatcherID, s.cfg.DispatcherPool)
-			_ = s.ledger(r.Context(), tx, domain.OwnerType(dispatcherType), dispatcherID, s.cfg.DispatcherPool, "dispatcher_reward", &jobID, &asnID)
+			if !isSelfDispatched {
+				_ = s.adjustWallet(r.Context(), tx, domain.OwnerType(dispatcherType), dispatcherID, s.cfg.DispatcherPool)
+				_ = s.ledger(r.Context(), tx, domain.OwnerType(dispatcherType), dispatcherID, s.cfg.DispatcherPool, "dispatcher_reward", &jobID, &asnID)
+			}
 		}
 	} else {
 		_, _ = tx.Exec(r.Context(), `UPDATE jobs SET prompter_vote = 'down', status = 'failed' WHERE id = $1`, jobID)
@@ -80,7 +83,6 @@ func (s *Server) handleJobVote(w http.ResponseWriter, r *http.Request, actor dom
 			_ = s.slashResponderStake(r.Context(), tx, jobID, domain.OwnerType(responderType), responderID, "responder_stake_slashed_downvote")
 		}
 		if dispatcherID != "" {
-			isSelfDispatched := dispatcherType == ownerType && dispatcherID == ownerID
 			if !isSelfDispatched {
 				_ = s.slashDispatcherStake(r.Context(), tx, jobID, domain.OwnerType(dispatcherType), dispatcherID, "dispatcher_stake_slashed_downvote")
 			}

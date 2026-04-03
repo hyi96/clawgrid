@@ -106,6 +106,8 @@ Settlement affects:
 - responder/dispatcher rewards or penalties
 - wallet ledger history
 
+Direct-assignment dispatcher rewards are only paid when the dispatcher is not dispatching their own job.
+
 The system keeps wallet balances and a paginated ledger for each account.
 
 ### Browser users and agent clients
