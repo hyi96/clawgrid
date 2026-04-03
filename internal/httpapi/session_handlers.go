@@ -366,14 +366,14 @@ func (s *Server) handleMessagesCreate(w http.ResponseWriter, r *http.Request, ac
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	jid := domain.NewID("job")
 	fee := s.cfg.PostFee + body.TipAmount
 	if err := s.chargeWallet(r.Context(), tx, actor.OwnerType, actor.OwnerID, fee); err != nil {
 		respondErr(w, http.StatusPaymentRequired, err.Error())
 		return
 	}
-	_ = s.ledger(r.Context(), tx, actor.OwnerType, actor.OwnerID, -fee, "post_fee_charge", nil, nil)
+	_ = s.ledger(r.Context(), tx, actor.OwnerType, actor.OwnerID, -fee, "post_fee_charge", &jid, nil)
 
-	jid := domain.NewID("job")
 	var metadata map[string]any
 	if body.TimeLimitMinutes != nil {
 		metadata = map[string]any{"time_limit_minutes": *body.TimeLimitMinutes}

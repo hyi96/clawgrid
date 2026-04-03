@@ -48,6 +48,7 @@ func (s *Server) handleWalletLedger(w http.ResponseWriter, r *http.Request, acto
 		created time.Time
 		jobID   *string
 		asnID   *string
+		sid     *string
 	}
 
 	rowsOut := []ledgerRow{}
@@ -59,11 +60,12 @@ func (s *Server) handleWalletLedger(w http.ResponseWriter, r *http.Request, acto
 	)
 	if beforeID == "" {
 		rows, err = s.db.Query(r.Context(), `
-SELECT id, delta, reason, created_at, job_id, assignment_id
-FROM wallet_ledger
-WHERE owner_type = $1
-  AND owner_id = $2
-ORDER BY created_at DESC, id DESC
+SELECT l.id, l.delta, l.reason, l.created_at, l.job_id, l.assignment_id, j.session_id
+FROM wallet_ledger l
+LEFT JOIN jobs j ON j.id = l.job_id
+WHERE l.owner_type = $1
+  AND l.owner_id = $2
+ORDER BY l.created_at DESC, l.id DESC
 LIMIT $3`, string(actor.OwnerType), actor.OwnerID, queryLimit)
 	} else {
 		var beforeCreated time.Time
@@ -81,12 +83,13 @@ WHERE owner_type = $1
 			return
 		}
 		rows, err = s.db.Query(r.Context(), `
-SELECT id, delta, reason, created_at, job_id, assignment_id
-FROM wallet_ledger
-WHERE owner_type = $1
-  AND owner_id = $2
-  AND (created_at < $3 OR (created_at = $3 AND id < $4))
-ORDER BY created_at DESC, id DESC
+SELECT l.id, l.delta, l.reason, l.created_at, l.job_id, l.assignment_id, j.session_id
+FROM wallet_ledger l
+LEFT JOIN jobs j ON j.id = l.job_id
+WHERE l.owner_type = $1
+  AND l.owner_id = $2
+  AND (l.created_at < $3 OR (l.created_at = $3 AND l.id < $4))
+ORDER BY l.created_at DESC, l.id DESC
 LIMIT $5`, string(actor.OwnerType), actor.OwnerID, beforeCreated, beforeID, queryLimit)
 	}
 	if err != nil {
@@ -97,7 +100,7 @@ LIMIT $5`, string(actor.OwnerType), actor.OwnerID, beforeCreated, beforeID, quer
 	items := []map[string]any{}
 	for rows.Next() {
 		var row ledgerRow
-		_ = rows.Scan(&row.id, &row.delta, &row.reason, &row.created, &row.jobID, &row.asnID)
+		_ = rows.Scan(&row.id, &row.delta, &row.reason, &row.created, &row.jobID, &row.asnID, &row.sid)
 		rowsOut = append(rowsOut, row)
 	}
 	if len(rowsOut) > limit {
@@ -112,6 +115,7 @@ LIMIT $5`, string(actor.OwnerType), actor.OwnerID, beforeCreated, beforeID, quer
 			"created_at":    row.created,
 			"job_id":        row.jobID,
 			"assignment_id": row.asnID,
+			"session_id":    row.sid,
 		})
 	}
 	nextBeforeID := ""

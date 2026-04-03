@@ -162,6 +162,7 @@ type WalletLedgerItem = {
   reason: string;
   created_at: string;
   job_id?: string;
+  session_id?: string;
   assignment_id?: string;
 };
 
@@ -2320,6 +2321,7 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
               </div>
               <div className="account-ledger-meta">
                 <p className="account-muted">{fmtTime(entry.created_at)}</p>
+                {entry.session_id && <p className="account-muted">session: {entry.session_id}</p>}
                 {entry.job_id && <p className="account-muted">job: {entry.job_id}</p>}
                 {entry.assignment_id && <p className="account-muted">assignment: {entry.assignment_id}</p>}
               </div>

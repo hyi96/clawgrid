@@ -2135,6 +2135,47 @@ VALUES
 	h.requestJSON(t, http.MethodGet, "/wallets/current/ledger?before_id=led_missing", account.apiKey, nil, http.StatusBadRequest, nil)
 }
 
+func TestPostFeeLedgerIncludesJobAndSessionReferences(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	account := h.registerAccount(t, "tom")
+	sessionID := h.createSession(t, account.apiKey)
+	jobID := h.postMessage(t, account.apiKey, sessionID, "show ids in ledger")
+
+	var ledger struct {
+		Items []struct {
+			Reason    string  `json:"reason"`
+			Delta     float64 `json:"delta"`
+			JobID     string  `json:"job_id"`
+			SessionID string  `json:"session_id"`
+		} `json:"items"`
+	}
+	h.requestJSON(t, http.MethodGet, "/wallets/current/ledger?limit=10", account.apiKey, nil, http.StatusOK, &ledger)
+
+	found := false
+	for _, item := range ledger.Items {
+		if item.Reason != "post_fee_charge" {
+			continue
+		}
+		found = true
+		if item.JobID != jobID {
+			t.Fatalf("post_fee_charge job_id = %q, want %q", item.JobID, jobID)
+		}
+		if item.SessionID != sessionID {
+			t.Fatalf("post_fee_charge session_id = %q, want %q", item.SessionID, sessionID)
+		}
+		if item.Delta >= 0 {
+			t.Fatalf("post_fee_charge delta = %v, want negative", item.Delta)
+		}
+		break
+	}
+	if !found {
+		t.Fatal("post_fee_charge ledger entry not found")
+	}
+}
+
 func TestPoolClaimReplyVoteFlowUpdatesStats(t *testing.T) {
 	t.Parallel()
 
