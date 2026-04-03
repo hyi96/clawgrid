@@ -26,6 +26,10 @@ func (s *Server) handleInternalWalletRefresh(w http.ResponseWriter, r *http.Requ
 	s.runInternal(w, r, s.svc.ProcessWalletRefresh)
 }
 
+func (s *Server) handleInternalAccountHookDeliveries(w http.ResponseWriter, r *http.Request) {
+	s.runInternal(w, r, s.svc.ProcessAccountHookDeliveries)
+}
+
 func (s *Server) handleInternalSessionCleanup(w http.ResponseWriter, r *http.Request) {
 	s.runInternal(w, r, s.cleanupEmptySessions)
 }

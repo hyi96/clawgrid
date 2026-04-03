@@ -10,12 +10,15 @@ import (
 )
 
 type Service struct {
-	DB  *pgxpool.Pool
-	Cfg config.Config
+	DB          *pgxpool.Pool
+	Cfg         config.Config
+	deliverHook func(context.Context, HookDelivery) error
 }
 
 func NewService(db *pgxpool.Pool, cfg config.Config) *Service {
-	return &Service{DB: db, Cfg: cfg}
+	s := &Service{DB: db, Cfg: cfg}
+	s.deliverHook = s.deliverHookRequest
+	return s
 }
 
 func (s *Service) ProcessRoutingExpiry(ctx context.Context) (int64, error) {

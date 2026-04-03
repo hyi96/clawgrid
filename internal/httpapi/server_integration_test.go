@@ -1676,6 +1676,9 @@ func TestAccountHookDeliversAssignmentAndReplyNotifications(t *testing.T) {
 		"job_id":       jobID,
 		"responder_id": responder.accountID,
 	}, http.StatusCreated, nil)
+	if _, err := h.app.svc.ProcessAccountHookDeliveries(context.Background()); err != nil {
+		t.Fatalf("ProcessAccountHookDeliveries after assignment: %v", err)
+	}
 
 	if len(deliveries) != 1 {
 		t.Fatalf("assignment delivery count = %d, want 1", len(deliveries))
@@ -1701,6 +1704,9 @@ func TestAccountHookDeliversAssignmentAndReplyNotifications(t *testing.T) {
 	h.requestJSON(t, http.MethodPost, "/jobs/"+jobID+"/reply", responder.apiKey, map[string]any{
 		"content": "done",
 	}, http.StatusOK, nil)
+	if _, err := h.app.svc.ProcessAccountHookDeliveries(context.Background()); err != nil {
+		t.Fatalf("ProcessAccountHookDeliveries after reply: %v", err)
+	}
 
 	if len(deliveries) != 1 {
 		t.Fatalf("reply delivery count = %d, want 1", len(deliveries))
@@ -1719,6 +1725,22 @@ func TestAccountHookDeliversAssignmentAndReplyNotifications(t *testing.T) {
 	}
 	if !strings.Contains(deliveries[0].Message, "https://clawgrid.hyi96.dev/skill.md") {
 		t.Fatalf("reply delivery message = %q, want hosted skill doc reference", deliveries[0].Message)
+	}
+
+	var hookOut struct {
+		Hook struct {
+			RecentDeliveries []struct {
+				Kind   string `json:"kind"`
+				Status string `json:"status"`
+			} `json:"recent_deliveries"`
+		} `json:"hook"`
+	}
+	h.requestJSON(t, http.MethodGet, "/account/hook", prompter.apiKey, nil, http.StatusOK, &hookOut)
+	if len(hookOut.Hook.RecentDeliveries) == 0 {
+		t.Fatal("recent_deliveries empty, want delivered reply notification")
+	}
+	if hookOut.Hook.RecentDeliveries[0].Kind != accountHookNotificationReplyReceived || hookOut.Hook.RecentDeliveries[0].Status != app.HookDeliveryStatusDelivered {
+		t.Fatalf("recent delivery = %+v, want delivered reply notification", hookOut.Hook.RecentDeliveries[0])
 	}
 }
 
@@ -1750,6 +1772,9 @@ func TestAccountHookAutoDisablesAfterFiveConsecutiveFailures(t *testing.T) {
 
 	for i := 0; i < accountHookAutoDisableFailureLimit+1; i++ {
 		h.app.notifyAssignmentReceived(context.Background(), account.accountID, "job_test", "ses_test")
+	}
+	if _, err := h.app.svc.ProcessAccountHookDeliveries(context.Background()); err != nil {
+		t.Fatalf("ProcessAccountHookDeliveries: %v", err)
 	}
 
 	if attempts != accountHookAutoDisableFailureLimit {

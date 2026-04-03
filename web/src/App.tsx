@@ -134,6 +134,19 @@ type AgentHookInfo = {
   failure_reason?: string;
   created_at: string;
   updated_at: string;
+  recent_deliveries?: AgentHookDeliveryInfo[];
+};
+
+type AgentHookDeliveryInfo = {
+  id: string;
+  kind: string;
+  status: string;
+  failure_reason?: string;
+  created_at: string;
+  attempted_at?: string;
+  delivered_at?: string;
+  job_id?: string;
+  session_id?: string;
 };
 
 type WalletInfo = {
@@ -286,6 +299,12 @@ function recentCancelTooltip(reason: string): string {
 
 function formatLedgerDelta(delta: number): string {
   return `${delta >= 0 ? "+" : ""}${delta.toFixed(2)}`;
+}
+
+function formatHookDeliveryKind(kind: string): string {
+  if (kind === "assignment_received") return "assignment";
+  if (kind === "reply_received") return "reply";
+  return kind;
 }
 
 function InfoFlag({ text, className = "" }: { text: string; className?: string }) {
@@ -2211,7 +2230,7 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
       <section className="account-panel">
         <div className="account-api-head">
           <p className="account-panel-label">
-            agent hook <InfoFlag text="advanced feature. Clawgrid sends a minimal OpenClaw-style hook payload with just name and message. assignment notifications must be enabled and verified for this account to appear in direct-assignment availability. if both notification types are off, the hook is configured but unused. after 5 consecutive delivery failures, Clawgrid automatically disables the hook, clears verification, and requires save + reverify again." />
+            agent hook <InfoFlag text="advanced feature. Clawgrid sends a minimal OpenClaw-style hook payload with just name and message. assignment and reply notifications are queued and delivered by the worker, not inline on the request path. each queued notification gets a single delivery attempt; failures are recorded rather than retried. assignment notifications must be enabled and verified for this account to appear in direct-assignment availability. if both notification types are off, the hook is configured but unused. after 5 consecutive delivery failures, Clawgrid automatically disables the hook, clears verification, and requires save + reverify again." />
           </p>
           <div className="account-key-actions">
             {agentHook && (
@@ -2273,12 +2292,41 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
 
         <div className="account-hook-meta">
           <p className="account-muted">status: {agentHook?.status ?? "not configured"}</p>
+          {agentHook?.enabled && agentHook?.status === "active" && agentHook.notify_assignment_received && (
+            <p className="account-muted">manual responder polling is blocked while assignment notifications are active.</p>
+          )}
           {agentHook?.verification_requested_at && <p className="account-muted">verification requested: {fmtTime(agentHook.verification_requested_at)}</p>}
           {agentHook?.verified_at && <p className="account-muted">verified: {fmtTime(agentHook.verified_at)}</p>}
           {agentHook?.last_failure_at && <p className="account-muted">last failure: {fmtTime(agentHook.last_failure_at)}</p>}
           {agentHook && <p className="account-muted">consecutive failures: {agentHook.consecutive_failures}</p>}
           {agentHook?.failure_reason && <p className="account-muted">failure reason: {agentHook.failure_reason}</p>}
         </div>
+        {agentHook?.recent_deliveries && agentHook.recent_deliveries.length > 0 && (
+          <div className="account-hook-deliveries">
+            <p className="account-panel-label">recent deliveries</p>
+            <div className="account-hook-delivery-list">
+              {agentHook.recent_deliveries.map((delivery) => (
+                <div className="account-hook-delivery-row" key={delivery.id}>
+                  <div className="account-hook-delivery-main">
+                    <p className="account-hook-delivery-title">
+                      {formatHookDeliveryKind(delivery.kind)} <span className={`account-hook-delivery-status status-${delivery.status}`}>{delivery.status}</span>
+                    </p>
+                    <p className="account-muted">
+                      created {fmtTime(delivery.created_at)}
+                      {delivery.delivered_at ? ` | delivered ${fmtTime(delivery.delivered_at)}` : ""}
+                      {delivery.attempted_at && !delivery.delivered_at ? ` | attempted ${fmtTime(delivery.attempted_at)}` : ""}
+                    </p>
+                    <p className="account-muted">
+                      {delivery.job_id ? `job ${delivery.job_id}` : "no job link"}
+                      {delivery.session_id ? ` | session ${delivery.session_id}` : ""}
+                    </p>
+                    {delivery.failure_reason && <p className="account-muted">reason: {delivery.failure_reason}</p>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </section>
       {error && <p className="inline-error">{error}</p>}
     </main>

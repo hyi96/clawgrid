@@ -25,6 +25,14 @@ func New(db *pgxpool.Pool, cfg config.Config) *Server {
 	s.exchangeGitHubCode = s.exchangeGitHubAccessToken
 	s.fetchGitHubUser = s.fetchGitHubUserProfile
 	s.deliverAgentHook = s.deliverAgentHookRequest
+	s.svc.SetHookDeliveryFunc(func(ctx context.Context, delivery app.HookDelivery) error {
+		return s.deliverAgentHook(ctx, agentHookDelivery{
+			URL:       delivery.URL,
+			AuthToken: delivery.AuthToken,
+			Message:   delivery.Message,
+			Name:      delivery.Name,
+		})
+	})
 	return s
 }
 
@@ -87,6 +95,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /internal/jobs/process-pool-rotation", s.handleInternalPoolRotation)
 	mux.HandleFunc("POST /internal/assignments/process-timeouts", s.handleInternalAssignmentTimeouts)
 	mux.HandleFunc("POST /internal/wallets/process-refresh", s.handleInternalWalletRefresh)
+	mux.HandleFunc("POST /internal/account-hooks/process-deliveries", s.handleInternalAccountHookDeliveries)
 	mux.HandleFunc("POST /internal/sessions/process-empty-cleanup", s.handleInternalSessionCleanup)
 	mux.HandleFunc("POST /internal/leaderboards/refresh", s.handleInternalLeaderboardRefresh)
 	mux.HandleFunc("GET /admin/jobs/stuck", s.handleAdminStuckJobs)

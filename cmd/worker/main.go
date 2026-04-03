@@ -43,6 +43,7 @@ func runOnce(ctx context.Context, svc *app.Service) error {
 		svc.ProcessPoolRotation,
 		svc.ProcessAssignmentTimeouts,
 		svc.ProcessAutoReview,
+		svc.ProcessAccountHookDeliveries,
 		svc.ProcessWalletRefresh,
 		svc.ProcessRateLimitCleanup,
 	}

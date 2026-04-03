@@ -10,16 +10,18 @@ import (
 	"strings"
 	"time"
 
+	"clawgrid/internal/app"
 	"clawgrid/internal/domain"
 	"github.com/jackc/pgx/v5"
 )
 
 const (
-	accountHookStatusPending                  = "pending_verification"
-	accountHookStatusActive                   = "active"
-	accountHookNotificationAssignmentReceived = "assignment_received"
-	accountHookNotificationReplyReceived      = "reply_received"
-	accountHookAutoDisableFailureLimit        = 5
+	accountHookStatusPending                  = app.AccountHookStatusPending
+	accountHookStatusActive                   = app.AccountHookStatusActive
+	accountHookNotificationAssignmentReceived = app.HookNotificationAssignmentReceived
+	accountHookNotificationReplyReceived      = app.HookNotificationReplyReceived
+	accountHookAutoDisableFailureLimit        = app.HookAutoDisableFailureLimit
+	accountHookRecentDeliveryLimit            = 8
 )
 
 type accountHookRow struct {
@@ -48,9 +50,16 @@ type agentHookDelivery struct {
 	Name      string
 }
 
-type agentHookPayload struct {
-	Message string `json:"message"`
-	Name    string `json:"name"`
+type accountHookDeliveryRow struct {
+	ID            string
+	Kind          string
+	Status        string
+	FailureReason string
+	CreatedAt     time.Time
+	AttemptedAt   *time.Time
+	DeliveredAt   *time.Time
+	JobID         *string
+	SessionID     *string
 }
 
 func normalizeAgentHookURL(raw string) (string, error) {
@@ -78,7 +87,21 @@ func normalizeHookToken(raw string) string {
 	return strings.TrimSpace(raw)
 }
 
-func buildAccountHookResponse(row accountHookRow) map[string]any {
+func buildAccountHookResponse(row accountHookRow, deliveries []accountHookDeliveryRow) map[string]any {
+	items := make([]map[string]any, 0, len(deliveries))
+	for _, delivery := range deliveries {
+		items = append(items, map[string]any{
+			"id":             delivery.ID,
+			"kind":           delivery.Kind,
+			"status":         delivery.Status,
+			"failure_reason": delivery.FailureReason,
+			"created_at":     delivery.CreatedAt,
+			"attempted_at":   delivery.AttemptedAt,
+			"delivered_at":   delivery.DeliveredAt,
+			"job_id":         delivery.JobID,
+			"session_id":     delivery.SessionID,
+		})
+	}
 	return map[string]any{
 		"id":                         row.ID,
 		"url":                        row.URL,
@@ -94,6 +117,7 @@ func buildAccountHookResponse(row accountHookRow) map[string]any {
 		"failure_reason":             row.FailureReason,
 		"created_at":                 row.CreatedAt,
 		"updated_at":                 row.UpdatedAt,
+		"recent_deliveries":          items,
 	}
 }
 
@@ -157,9 +181,9 @@ func (row accountHookRow) allowsNotification(kind string) bool {
 		return false
 	}
 	switch kind {
-	case accountHookNotificationAssignmentReceived:
+	case app.HookNotificationAssignmentReceived:
 		return row.NotifyAssignmentReceived
-	case accountHookNotificationReplyReceived:
+	case app.HookNotificationReplyReceived:
 		return row.NotifyReplyReceived
 	default:
 		return false
@@ -213,9 +237,9 @@ func (s *Server) agentHookReplyReceivedMessage(sessionID, senderRole string) str
 }
 
 func (s *Server) deliverAgentHookRequest(ctx context.Context, delivery agentHookDelivery) error {
-	payload := agentHookPayload{
-		Message: delivery.Message,
-		Name:    delivery.Name,
+	payload := map[string]any{
+		"message": delivery.Message,
+		"name":    delivery.Name,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -241,68 +265,56 @@ func (s *Server) deliverAgentHookRequest(ctx context.Context, delivery agentHook
 	return nil
 }
 
-func (s *Server) recordAccountHookDeliveryResult(ctx context.Context, accountID string, deliveryErr error) {
-	if accountID == "" {
-		return
+func (s *Server) loadRecentAccountHookDeliveries(ctx context.Context, accountID string, limit int) ([]accountHookDeliveryRow, error) {
+	rows, err := s.db.Query(ctx, `
+SELECT id, kind, status, failure_reason, created_at, attempted_at, delivered_at, job_id, session_id
+FROM account_hook_deliveries
+WHERE account_id = $1
+ORDER BY created_at DESC, id DESC
+LIMIT $2`, accountID, limit)
+	if err != nil {
+		return nil, err
 	}
-	if deliveryErr != nil {
-		_, _ = s.db.Exec(ctx, `
-UPDATE account_hooks
-SET last_failure_at = now(),
-    consecutive_failures = CASE
-      WHEN consecutive_failures + 1 >= $3 THEN 0
-      ELSE consecutive_failures + 1
-    END,
-    enabled = CASE
-      WHEN consecutive_failures + 1 >= $3 THEN FALSE
-      ELSE enabled
-    END,
-    status = CASE
-      WHEN consecutive_failures + 1 >= $3 THEN $4
-      ELSE status
-    END,
-    verification_token = CASE
-      WHEN consecutive_failures + 1 >= $3 THEN NULL
-      ELSE verification_token
-    END,
-    verified_at = CASE
-      WHEN consecutive_failures + 1 >= $3 THEN NULL
-      ELSE verified_at
-    END,
-    failure_reason = $2,
-    updated_at = now()
-WHERE account_id = $1`, accountID, deliveryErr.Error(), accountHookAutoDisableFailureLimit, accountHookStatusPending)
-		return
+	defer rows.Close()
+	items := make([]accountHookDeliveryRow, 0)
+	for rows.Next() {
+		var item accountHookDeliveryRow
+		if err := rows.Scan(&item.ID, &item.Kind, &item.Status, &item.FailureReason, &item.CreatedAt, &item.AttemptedAt, &item.DeliveredAt, &item.JobID, &item.SessionID); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
 	}
-	_, _ = s.db.Exec(ctx, `
-UPDATE account_hooks
-SET last_success_at = now(),
-    last_failure_at = NULL,
-    consecutive_failures = 0,
-    failure_reason = '',
-    updated_at = now()
-WHERE account_id = $1`, accountID)
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
-func (s *Server) notifyAccountHook(ctx context.Context, accountID, kind, message string) {
+func (s *Server) enqueueAccountHookNotification(ctx context.Context, accountID, kind, message string, jobID, sessionID *string) {
 	row, err := s.loadAccountHook(ctx, accountID)
 	if err != nil || row == nil || !row.allowsNotification(kind) {
 		return
 	}
-	err = s.deliverAgentHook(ctx, agentHookDelivery{
-		URL:       row.URL,
-		AuthToken: row.AuthToken,
-		Message:   message,
-		Name:      "Clawgrid",
-	})
-	s.recordAccountHookDeliveryResult(ctx, accountID, err)
+	_, _ = s.db.Exec(ctx, `
+INSERT INTO account_hook_deliveries(id, hook_id, account_id, kind, name, message, status, job_id, session_id)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		domain.NewID("ahd"),
+		row.ID,
+		accountID,
+		kind,
+		"Clawgrid",
+		message,
+		app.HookDeliveryStatusPending,
+		jobID,
+		sessionID,
+	)
 }
 
 func (s *Server) notifyAssignmentReceived(ctx context.Context, responderAccountID, jobID, sessionID string) {
 	if responderAccountID == "" {
 		return
 	}
-	s.notifyAccountHook(ctx, responderAccountID, accountHookNotificationAssignmentReceived, s.agentHookAssignmentReceivedMessage(jobID, sessionID))
+	s.enqueueAccountHookNotification(ctx, responderAccountID, app.HookNotificationAssignmentReceived, s.agentHookAssignmentReceivedMessage(jobID, sessionID), &jobID, &sessionID)
 }
 
 func (s *Server) notifyReplyReceived(ctx context.Context, sessionID string, sender domain.Actor, senderRole string) {
@@ -320,7 +332,7 @@ WHERE m.session_id = $1
   AND ah.enabled = TRUE
   AND ah.status = $2
   AND ah.notify_reply_received = TRUE
-  AND ah.account_id <> $3`, sessionID, accountHookStatusActive, sender.OwnerID)
+  AND ah.account_id <> $3`, sessionID, app.AccountHookStatusActive, sender.OwnerID)
 	if err != nil {
 		return
 	}
@@ -331,7 +343,7 @@ WHERE m.session_id = $1
 		if err := rows.Scan(&accountID); err != nil {
 			continue
 		}
-		s.notifyAccountHook(ctx, accountID, accountHookNotificationReplyReceived, message)
+		s.enqueueAccountHookNotification(ctx, accountID, app.HookNotificationReplyReceived, message, nil, &sessionID)
 	}
 }
 
@@ -348,7 +360,7 @@ func (s *Server) accountHookDeliveryEnabled(ctx context.Context, ownerType domai
 	if err != nil {
 		return false, err
 	}
-	return enabled && status == accountHookStatusActive && notifyAssignmentReceived, nil
+	return enabled && status == app.AccountHookStatusActive && notifyAssignmentReceived, nil
 }
 
 func (s *Server) handleAccountHookGet(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
@@ -365,7 +377,12 @@ func (s *Server) handleAccountHookGet(w http.ResponseWriter, r *http.Request, ac
 		respondJSON(w, http.StatusOK, map[string]any{"hook": nil})
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]any{"hook": buildAccountHookResponse(*row)})
+	deliveries, err := s.loadRecentAccountHookDeliveries(r.Context(), actor.OwnerID, accountHookRecentDeliveryLimit)
+	if err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"hook": buildAccountHookResponse(*row, deliveries)})
 }
 
 func (s *Server) handleAccountHookPut(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
@@ -463,7 +480,7 @@ DO UPDATE SET
 		enabled,
 		notifyAssignmentReceived,
 		notifyReplyReceived,
-		accountHookStatusPending,
+		app.AccountHookStatusPending,
 		verifyToken,
 	); err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
@@ -497,7 +514,12 @@ WHERE account_id = $1`, actor.OwnerID, err.Error())
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]any{"hook": buildAccountHookResponse(*row)})
+	deliveries, err := s.loadRecentAccountHookDeliveries(r.Context(), actor.OwnerID, accountHookRecentDeliveryLimit)
+	if err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"hook": buildAccountHookResponse(*row, deliveries)})
 }
 
 func (s *Server) handleAccountHookDelete(w http.ResponseWriter, r *http.Request, actor domain.Actor) {
@@ -539,7 +561,7 @@ func (s *Server) handleAccountHookSetEnabled(w http.ResponseWriter, r *http.Requ
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if status != accountHookStatusActive {
+	if status != app.AccountHookStatusActive {
 		respondErr(w, http.StatusConflict, "hook_reverification_required")
 		return
 	}
@@ -557,7 +579,12 @@ func (s *Server) handleAccountHookSetEnabled(w http.ResponseWriter, r *http.Requ
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]any{"hook": buildAccountHookResponse(*row)})
+	deliveries, err := s.loadRecentAccountHookDeliveries(r.Context(), actor.OwnerID, accountHookRecentDeliveryLimit)
+	if err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"hook": buildAccountHookResponse(*row, deliveries)})
 }
 
 func (s *Server) handleAgentHookVerify(w http.ResponseWriter, r *http.Request) {
@@ -576,7 +603,7 @@ SET status = $2,
     consecutive_failures = 0,
     failure_reason = '',
     updated_at = now()
-WHERE verification_token = $1`, token, accountHookStatusActive)
+WHERE verification_token = $1`, token, app.AccountHookStatusActive)
 	if err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return

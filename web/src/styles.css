@@ -780,6 +780,50 @@ textarea:disabled {
   margin: 0;
 }
 
+.account-hook-deliveries {
+  margin-top: 12px;
+}
+
+.account-hook-delivery-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.account-hook-delivery-row {
+  border: 1px solid #496171;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 35%),
+    linear-gradient(180deg, #253b4a 0%, #1b2d39 100%);
+  box-shadow: var(--shadow-1);
+  padding: 10px 12px;
+}
+
+.account-hook-delivery-title {
+  margin: 0 0 4px;
+  color: #eef5fa;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.account-hook-delivery-status {
+  margin-left: 8px;
+  text-transform: lowercase;
+}
+
+.account-hook-delivery-status.status-delivered {
+  color: #bfe7b3;
+}
+
+.account-hook-delivery-status.status-sending {
+  color: #ead08b;
+}
+
+.account-hook-delivery-status.status-failed,
+.account-hook-delivery-status.status-skipped {
+  color: #f1b0a5;
+}
+
 .account-hook-flag {
   display: flex;
   align-items: center;
