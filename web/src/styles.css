@@ -470,9 +470,17 @@ textarea:disabled {
 }
 
 .account-counter {
-  margin: 6px 0 10px;
+  margin: 0;
   font-size: 12px;
   color: var(--text-soft);
+}
+
+.account-description-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 6px;
 }
 
 .account-balance-value {
@@ -1294,6 +1302,27 @@ textarea:disabled {
 
 .dispatch-responder-card .dispatch-progress {
   margin-top: auto;
+}
+
+.dispatch-responder-status {
+  margin-top: auto;
+  width: 100%;
+  border: 1px solid #4a6171;
+  box-shadow: inset 1px 1px 0 rgba(255, 255, 255, 0.04), inset -1px -1px 0 rgba(0, 0, 0, 0.55);
+  padding: 4px 8px;
+  font-size: 11px;
+  line-height: 1.2;
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.dispatch-responder-status-hook {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent 35%),
+    linear-gradient(180deg, #224a45 0%, #173932 100%);
+  border-color: #4d8e80;
+  color: #bfeadf;
 }
 
 .dispatch-progress {

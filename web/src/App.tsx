@@ -290,35 +290,69 @@ function isResponderAvailableNow(responder: AvailableResponder, now = Date.now()
   return responderWaitEndsAtMs(responder) > now;
 }
 
-function reconcileDispatchQueue<T>(
-  current: T[],
+function reconcileDispatchSlots<T>(
+  current: Array<T | null>,
   incoming: T[],
   keyOf: (item: T) => string,
   isVisible: (item: T, now: number) => boolean,
-  maxItems: number,
-): T[] {
+  maxSlots: number,
+): Array<T | null> {
   const now = Date.now();
   const incomingByKey = new Map(incoming.map((item) => [keyOf(item), item]));
-  const next: T[] = [];
+  const next: Array<T | null> = Array.from({ length: maxSlots }, () => null);
   const used = new Set<string>();
 
-  for (const item of current) {
+  for (let index = 0; index < maxSlots; index += 1) {
+    const item = current[index];
+    if (!item) continue;
     const key = keyOf(item);
     if (!isVisible(item, now)) continue;
-    next.push(incomingByKey.get(key) ?? item);
+    next[index] = incomingByKey.get(key) ?? item;
     used.add(key);
-    if (next.length >= maxItems) return next;
   }
 
   for (const item of incoming) {
     const key = keyOf(item);
     if (used.has(key) || !isVisible(item, now)) continue;
-    next.push(item);
+    const emptyIndex = next.findIndex((slot) => slot == null);
+    if (emptyIndex === -1) break;
+    next[emptyIndex] = item;
     used.add(key);
-    if (next.length >= maxItems) break;
   }
 
   return next;
+}
+
+function clearDispatchSlotByKey<T>(
+  current: Array<T | null>,
+  key: string,
+  keyOf: (item: T) => string,
+): Array<T | null> {
+  let changed = false;
+  const next = current.map((item) => {
+    if (item && keyOf(item) === key) {
+      changed = true;
+      return null;
+    }
+    return item;
+  });
+  return changed ? next : current;
+}
+
+function expireDispatchSlots<T>(
+  current: Array<T | null>,
+  isVisible: (item: T, now: number) => boolean,
+  now: number,
+): { next: Array<T | null>; changed: boolean } {
+  let changed = false;
+  const next = current.map((item) => {
+    if (item && !isVisible(item, now)) {
+      changed = true;
+      return null;
+    }
+    return item;
+  });
+  return { next, changed };
 }
 
 function formatCredits(v: number): string {
@@ -813,8 +847,8 @@ function AskPage({ auth }: { auth: AuthState | null }) {
 }
 
 function DispatchPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequireAuth: () => void }) {
-  const [jobs, setJobs] = useState<RoutingJob[]>([]);
-  const [responders, setResponders] = useState<AvailableResponder[]>([]);
+  const [jobs, setJobs] = useState<Array<RoutingJob | null>>([]);
+  const [responders, setResponders] = useState<Array<AvailableResponder | null>>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [draggingResponder, setDraggingResponder] = useState<AvailableResponder | null>(null);
@@ -843,10 +877,10 @@ function DispatchPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequi
         api<{ items: AvailableResponder[] }>("/responders/available", auth),
       ]);
       setJobs((current) =>
-        reconcileDispatchQueue(current, jobData.items, (job) => job.id, isRoutingJobActive, DISPATCH_JOB_SLOTS),
+        reconcileDispatchSlots(current, jobData.items, (job) => job.id, isRoutingJobActive, DISPATCH_JOB_SLOTS),
       );
       setResponders((current) =>
-        reconcileDispatchQueue(
+        reconcileDispatchSlots(
           current,
           responderData.items,
           (responder) => `${responder.owner_type}:${responder.owner_id}`,
@@ -877,15 +911,15 @@ function DispatchPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequi
     let respondersExpired = false;
 
     setJobs((current) => {
-      const next = current.filter((job) => isRoutingJobActive(job, nowTick));
-      jobsExpired = next.length !== current.length;
-      return jobsExpired ? next : current;
+      const result = expireDispatchSlots(current, isRoutingJobActive, nowTick);
+      jobsExpired = result.changed;
+      return result.changed ? result.next : current;
     });
 
     setResponders((current) => {
-      const next = current.filter((responder) => isResponderAvailableNow(responder, nowTick));
-      respondersExpired = next.length !== current.length;
-      return respondersExpired ? next : current;
+      const result = expireDispatchSlots(current, isResponderAvailableNow, nowTick);
+      respondersExpired = result.changed;
+      return result.changed ? result.next : current;
     });
 
     if (jobsExpired || respondersExpired) {
@@ -942,10 +976,12 @@ function DispatchPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequi
           responder_id: responder.owner_id,
         }),
       });
-      setJobs((current) => current.filter((job) => job.id !== jobID));
+      setJobs((current) => clearDispatchSlotByKey(current, jobID, (job) => job.id));
       setResponders((current) =>
-        current.filter(
-          (row) => !(row.owner_type === responder.owner_type && row.owner_id === responder.owner_id),
+        clearDispatchSlotByKey(
+          current,
+          `${responder.owner_type}:${responder.owner_id}`,
+          (row) => `${row.owner_type}:${row.owner_id}`,
         ),
       );
       await load();
@@ -1054,9 +1090,15 @@ function DispatchPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequi
                 <p className="dispatch-responder-blurb">
                   {responder.responder_description?.trim() ? responder.responder_description : "no responder blurb yet"}
                 </p>
-                <div className="dispatch-progress" aria-hidden="true">
-                  <div className="dispatch-progress-fill" style={{ width: `${elapsed}%` }} />
-                </div>
+                {isHookResponder ? (
+                  <div className="dispatch-responder-status dispatch-responder-status-hook" title="available through verified hook notifications">
+                    hook online
+                  </div>
+                ) : (
+                  <div className="dispatch-progress" aria-hidden="true">
+                    <div className="dispatch-progress-fill" style={{ width: `${elapsed}%` }} />
+                  </div>
+                )}
               </div>
             );
           })}
@@ -2041,11 +2083,13 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
             className="account-description"
             rows={3}
             value={responderDescription}
-            maxLength={420}
+            maxLength={320}
             onChange={(e) => setResponderDescription(e.target.value)}
           />
-          <p className="account-counter">{responderDescriptionChars} / 420 chars</p>
-          <button className="account-btn small" onClick={() => void saveResponderDescription()}>save blurb</button>
+          <div className="account-description-footer">
+            <p className="account-counter">{responderDescriptionChars} / 320 chars</p>
+            <button className="account-btn small" onClick={() => void saveResponderDescription()}>save blurb</button>
+          </div>
         </article>
       </section>
 

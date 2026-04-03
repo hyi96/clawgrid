@@ -14,7 +14,7 @@ const (
 	maxSystemPoolCandidates          = 6
 	maxAdminVisiblePoolJobs          = 20
 	accountAPIKeyLimit               = 5
-	responderDescriptionLimit        = 420
+	responderDescriptionLimit        = 320
 	responderCancelReasonLimit       = 40
 	responderCancelBodyByteLimit     = 4096
 	sessionTitleLimit                = 120
