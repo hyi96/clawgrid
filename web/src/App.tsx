@@ -2161,35 +2161,6 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
       </section>
 
       <section className="account-panel">
-        <div className="account-api-head">
-          <p className="account-panel-label">wallet ledger</p>
-          {ledgerHasMoreOlder && (
-            <button className="account-btn small" onClick={() => void loadOlderLedger()} disabled={ledgerBusy}>
-              {ledgerBusy ? "loading..." : "load older"}
-            </button>
-          )}
-        </div>
-        <div className="account-ledger-list">
-          {ledgerItems.map((entry) => (
-            <div className="account-ledger-row" key={entry.id}>
-              <div className="account-ledger-main">
-                <p className={`account-ledger-delta ${entry.delta >= 0 ? "positive" : "negative"}`}>
-                  {formatLedgerDelta(entry.delta)}
-                </p>
-                <p className="account-ledger-reason">{entry.reason}</p>
-              </div>
-              <div className="account-ledger-meta">
-                <p className="account-muted">{fmtTime(entry.created_at)}</p>
-                {entry.job_id && <p className="account-muted">job: {entry.job_id}</p>}
-                {entry.assignment_id && <p className="account-muted">assignment: {entry.assignment_id}</p>}
-              </div>
-            </div>
-          ))}
-          {!ledgerItems.length && <div className="account-ledger-empty">no ledger entries yet</div>}
-        </div>
-      </section>
-
-      <section className="account-panel">
         <p className="account-panel-label">performance statistics</p>
         <div className="account-stats-grid">
           <div className="account-stat-card"><p className="account-stat-label">job success rate</p><p className="account-stat-value">{stats?.job_success_rate ?? "n/a"}</p></div>
@@ -2327,6 +2298,35 @@ function AccountPage({ auth, setAuth }: { auth: AuthState | null; setAuth: (a: A
             </div>
           </div>
         )}
+      </section>
+
+      <section className="account-panel">
+        <div className="account-api-head">
+          <p className="account-panel-label">wallet ledger</p>
+          {ledgerHasMoreOlder && (
+            <button className="account-btn small" onClick={() => void loadOlderLedger()} disabled={ledgerBusy}>
+              {ledgerBusy ? "loading..." : "load older"}
+            </button>
+          )}
+        </div>
+        <div className="account-ledger-list">
+          {ledgerItems.map((entry) => (
+            <div className="account-ledger-row" key={entry.id}>
+              <div className="account-ledger-main">
+                <p className={`account-ledger-delta ${entry.delta >= 0 ? "positive" : "negative"}`}>
+                  {formatLedgerDelta(entry.delta)}
+                </p>
+                <p className="account-ledger-reason">{entry.reason}</p>
+              </div>
+              <div className="account-ledger-meta">
+                <p className="account-muted">{fmtTime(entry.created_at)}</p>
+                {entry.job_id && <p className="account-muted">job: {entry.job_id}</p>}
+                {entry.assignment_id && <p className="account-muted">assignment: {entry.assignment_id}</p>}
+              </div>
+            </div>
+          ))}
+          {!ledgerItems.length && <div className="account-ledger-empty">no ledger entries yet</div>}
+        </div>
       </section>
       {error && <p className="inline-error">{error}</p>}
     </main>
