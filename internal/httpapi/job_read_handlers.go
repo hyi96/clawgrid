@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -125,37 +126,14 @@ func (s *Server) serveRoutingJobs(w http.ResponseWriter, r *http.Request, actor 
 		return
 	}
 	bandSize := dispatchBandSize(activeDispatchers, maxDispatchRoutingJobs, dispatchJobsBandBase)
-	rows, err := s.db.Query(r.Context(), `
-SELECT j.id, j.session_id, j.routing_cycle_count, j.last_routing_entered_at, j.routing_ends_at, COALESCE(sess.title, ''), COALESCE(sess.dispatch_snippet, ''), j.tip_amount, COALESCE(NULLIF(j.metadata_json->>'time_limit_minutes', '')::int, 0)
-FROM jobs j
-JOIN sessions sess ON sess.id = j.session_id
-WHERE j.status = 'routing'
-  AND j.response_message_id IS NULL
-ORDER BY j.routing_cycle_count DESC, j.tip_amount DESC, j.created_at ASC
-LIMIT $1`, bandSize)
+	candidates, err := s.loadRoutingJobCandidates(r.Context(), bandSize)
 	if err != nil {
 		respondErr(w, http.StatusInternalServerError, err.Error())
 		return
-	}
-	defer rows.Close()
-	candidates := []routingJobRow{}
-	for rows.Next() {
-		var row routingJobRow
-		_ = rows.Scan(&row.id, &row.sessionID, &row.cycles, &row.enteredAt, &row.endsAt, &row.sessionTitle, &row.sessionSnippet, &row.tipAmount, &row.timeLimitMinutes)
-		candidates = append(candidates, row)
 	}
 	shuffleRoutingJobsForDispatcher(candidates, actor, time.Now())
 	if len(candidates) > maxDispatchRoutingJobs {
 		candidates = candidates[:maxDispatchRoutingJobs]
-	}
-	sessionIDs := make([]string, 0, len(candidates))
-	for _, row := range candidates {
-		sessionIDs = append(sessionIDs, row.sessionID)
-	}
-	cancelReasons, err := s.loadLatestResponderCancelReasons(r.Context(), sessionIDs)
-	if err != nil {
-		respondErr(w, http.StatusInternalServerError, err.Error())
-		return
 	}
 
 	items := []map[string]any{}
@@ -177,10 +155,85 @@ LIMIT $1`, bandSize)
 			"routing_started_at":  row.enteredAt,
 			"routing_ends_at":     row.endsAt,
 		}
-		if reason := cancelReasons[row.sessionID]; reason != "" {
-			item["last_responder_cancel_reason"] = reason
+		if row.lastCancelReason != "" {
+			item["last_responder_cancel_reason"] = row.lastCancelReason
 		}
 		items = append(items, item)
 	}
 	respondJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) loadRoutingJobCandidates(ctx context.Context, limit int) ([]routingJobRow, error) {
+	rows, err := s.db.Query(ctx, `
+SELECT job_id,
+       session_id,
+       routing_cycle_count,
+       routing_started_at,
+       routing_ends_at,
+       session_title,
+       session_snippet,
+       tip_amount,
+       time_limit_minutes,
+       last_responder_cancel_reason
+FROM dispatch_job_snapshots
+ORDER BY rank ASC
+LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	candidates := []routingJobRow{}
+	for rows.Next() {
+		var row routingJobRow
+		if err := rows.Scan(&row.id, &row.sessionID, &row.cycles, &row.enteredAt, &row.endsAt, &row.sessionTitle, &row.sessionSnippet, &row.tipAmount, &row.timeLimitMinutes, &row.lastCancelReason); err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(candidates) > 0 {
+		return candidates, nil
+	}
+	return s.loadRoutingJobCandidatesLive(ctx, limit)
+}
+
+func (s *Server) loadRoutingJobCandidatesLive(ctx context.Context, limit int) ([]routingJobRow, error) {
+	rows, err := s.db.Query(ctx, `
+SELECT j.id, j.session_id, j.routing_cycle_count, j.last_routing_entered_at, j.routing_ends_at, COALESCE(sess.title, ''), COALESCE(sess.dispatch_snippet, ''), j.tip_amount, COALESCE(NULLIF(j.metadata_json->>'time_limit_minutes', '')::int, 0)
+FROM jobs j
+JOIN sessions sess ON sess.id = j.session_id
+WHERE j.status = 'routing'
+  AND j.response_message_id IS NULL
+ORDER BY j.routing_cycle_count DESC, j.tip_amount DESC, j.created_at ASC
+LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	candidates := []routingJobRow{}
+	for rows.Next() {
+		var row routingJobRow
+		if err := rows.Scan(&row.id, &row.sessionID, &row.cycles, &row.enteredAt, &row.endsAt, &row.sessionTitle, &row.sessionSnippet, &row.tipAmount, &row.timeLimitMinutes); err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sessionIDs := make([]string, 0, len(candidates))
+	for _, row := range candidates {
+		sessionIDs = append(sessionIDs, row.sessionID)
+	}
+	cancelReasons, err := s.loadLatestResponderCancelReasons(ctx, sessionIDs)
+	if err != nil {
+		return nil, err
+	}
+	for i := range candidates {
+		candidates[i].lastCancelReason = cancelReasons[candidates[i].sessionID]
+	}
+	return candidates, nil
 }

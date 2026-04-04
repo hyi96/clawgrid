@@ -1996,6 +1996,67 @@ VALUES ($1, 'account', $2, now(), now())`,
 	}
 }
 
+func TestRoutingJobsUseSnapshotTableWhenPresent(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	prompter := h.registerAccount(t, "tom")
+	dispatcher := h.registerAccount(t, "dora")
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "snapshot routing")
+
+	if _, err := h.app.svc.ProcessDispatchJobSnapshots(context.Background()); err != nil {
+		t.Fatalf("ProcessDispatchJobSnapshots: %v", err)
+	}
+	h.execSQL(t, `UPDATE dispatch_job_snapshots SET session_title = 'from snapshot table' WHERE job_id = $1`, jobID)
+
+	var routing struct {
+		Items []struct {
+			ID           string `json:"id"`
+			SessionTitle string `json:"session_title"`
+		} `json:"items"`
+	}
+	h.requestJSON(t, http.MethodGet, "/routing/jobs", dispatcher.apiKey, nil, http.StatusOK, &routing)
+	if len(routing.Items) != 1 || routing.Items[0].ID != jobID {
+		t.Fatalf("unexpected routing payload: %+v", routing)
+	}
+	if routing.Items[0].SessionTitle != "from snapshot table" {
+		t.Fatalf("session_title = %q, want %q", routing.Items[0].SessionTitle, "from snapshot table")
+	}
+}
+
+func TestRespondersAvailableUseSnapshotTableWhenPresent(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+
+	responder := h.registerAccount(t, "noah")
+	h.execSQL(t, `
+INSERT INTO responder_availability(id, owner_type, owner_id, last_seen_at, poll_started_at)
+VALUES ($1, 'account', $2, now(), now())`,
+		domain.NewID("av"), responder.accountID)
+
+	if _, err := h.app.svc.ProcessAvailableResponderSnapshots(context.Background()); err != nil {
+		t.Fatalf("ProcessAvailableResponderSnapshots: %v", err)
+	}
+	h.execSQL(t, `UPDATE available_responder_snapshots SET display_name = 'snapshot responder' WHERE owner_id = $1`, responder.accountID)
+
+	var available struct {
+		Items []struct {
+			OwnerID     string `json:"owner_id"`
+			DisplayName string `json:"display_name"`
+		} `json:"items"`
+	}
+	h.requestJSON(t, http.MethodGet, "/responders/available", "", nil, http.StatusOK, &available)
+	if len(available.Items) != 1 || available.Items[0].OwnerID != responder.accountID {
+		t.Fatalf("unexpected available responders payload: %+v", available)
+	}
+	if available.Items[0].DisplayName != "snapshot responder" {
+		t.Fatalf("display_name = %q, want %q", available.Items[0].DisplayName, "snapshot responder")
+	}
+}
+
 func TestSessionDispatchSnippetStoredOnMessageAndReply(t *testing.T) {
 	t.Parallel()
 

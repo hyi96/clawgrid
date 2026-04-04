@@ -35,7 +35,77 @@ func (s *Server) serveRespondersAvailable(w http.ResponseWriter, r *http.Request
 		return
 	}
 	bandSize := dispatchBandSize(activeDispatchers, maxDispatchResponders, dispatchRespondersBandBase)
-	rows, err := s.db.Query(r.Context(), `
+	candidates, err := s.loadAvailableResponderCandidates(r.Context(), actor, bandSize)
+	if err != nil {
+		respondErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	shuffleRespondersForDispatcher(candidates, actor, time.Now())
+	if len(candidates) > maxDispatchResponders {
+		candidates = candidates[:maxDispatchResponders]
+	}
+	items := []map[string]any{}
+	for _, row := range candidates {
+		item := map[string]any{
+			"availability_mode":     row.availabilityMode,
+			"owner_type":            row.ownerType,
+			"owner_id":              row.ownerID,
+			"display_name":          row.displayName,
+			"last_seen_at":          row.lastSeenAt,
+			"responder_description": row.description,
+		}
+		if row.pollStartedAt != nil {
+			item["poll_started_at"] = row.pollStartedAt
+			item["assignment_wait_seconds"] = int(s.cfg.PollAssignmentWait.Seconds())
+		}
+		items = append(items, item)
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *Server) loadAvailableResponderCandidates(ctx context.Context, actor domain.Actor, limit int) ([]availableResponderRow, error) {
+	queryLimit := limit
+	if !actor.IsZero() {
+		queryLimit++
+	}
+	rows, err := s.db.Query(ctx, `
+SELECT availability_mode,
+       owner_type,
+       owner_id,
+       last_seen_at,
+       poll_started_at,
+       display_name,
+       responder_description
+FROM available_responder_snapshots
+ORDER BY rank ASC
+LIMIT $1`, queryLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	candidates := []availableResponderRow{}
+	for rows.Next() {
+		var row availableResponderRow
+		if err := rows.Scan(&row.availabilityMode, &row.ownerType, &row.ownerID, &row.lastSeenAt, &row.pollStartedAt, &row.displayName, &row.description); err != nil {
+			return nil, err
+		}
+		if !actor.IsZero() && row.ownerType == string(actor.OwnerType) && row.ownerID == actor.OwnerID {
+			continue
+		}
+		candidates = append(candidates, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(candidates) > 0 {
+		return candidates, nil
+	}
+	return s.loadAvailableResponderCandidatesLive(ctx, actor, limit)
+}
+
+func (s *Server) loadAvailableResponderCandidatesLive(ctx context.Context, actor domain.Actor, limit int) ([]availableResponderRow, error) {
+	rows, err := s.db.Query(ctx, `
 WITH poll_candidates AS (
   SELECT 'poll'::text AS availability_mode,
          ra.owner_type,
@@ -120,39 +190,23 @@ FROM (
   SELECT * FROM hook_candidates
 ) candidates
 ORDER BY last_seen_at DESC
-LIMIT $5`, int(s.cfg.ResponderActiveWindow.Seconds()), string(actor.OwnerType), actor.OwnerID, int(s.cfg.PollAssignmentWait.Seconds()), bandSize)
+LIMIT $5`, int(s.cfg.ResponderActiveWindow.Seconds()), string(actor.OwnerType), actor.OwnerID, int(s.cfg.PollAssignmentWait.Seconds()), limit)
 	if err != nil {
-		respondErr(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, err
 	}
 	defer rows.Close()
 	candidates := []availableResponderRow{}
 	for rows.Next() {
 		var row availableResponderRow
-		_ = rows.Scan(&row.availabilityMode, &row.ownerType, &row.ownerID, &row.lastSeenAt, &row.pollStartedAt, &row.displayName, &row.description)
+		if err := rows.Scan(&row.availabilityMode, &row.ownerType, &row.ownerID, &row.lastSeenAt, &row.pollStartedAt, &row.displayName, &row.description); err != nil {
+			return nil, err
+		}
 		candidates = append(candidates, row)
 	}
-	shuffleRespondersForDispatcher(candidates, actor, time.Now())
-	if len(candidates) > maxDispatchResponders {
-		candidates = candidates[:maxDispatchResponders]
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
-	items := []map[string]any{}
-	for _, row := range candidates {
-		item := map[string]any{
-			"availability_mode":      row.availabilityMode,
-			"owner_type":              row.ownerType,
-			"owner_id":                row.ownerID,
-			"display_name":            row.displayName,
-			"last_seen_at":            row.lastSeenAt,
-			"responder_description":   row.description,
-		}
-		if row.pollStartedAt != nil {
-			item["poll_started_at"] = row.pollStartedAt
-			item["assignment_wait_seconds"] = int(s.cfg.PollAssignmentWait.Seconds())
-		}
-		items = append(items, item)
-	}
-	respondJSON(w, http.StatusOK, map[string]any{"items": items})
+	return candidates, nil
 }
 
 func (s *Server) handleResponderState(w http.ResponseWriter, r *http.Request, actor domain.Actor) {

@@ -153,6 +153,190 @@ func TestServiceProcessPoolRotation(t *testing.T) {
 	}
 }
 
+func TestServiceProcessDispatchJobSnapshots(t *testing.T) {
+	t.Parallel()
+
+	h := newServiceHarness(t, nil)
+	prompterID := h.insertAccount(t, "tom")
+	responderID := h.insertAccount(t, "noah")
+	sessionA := h.insertSession(t, "account", prompterID)
+	sessionB := h.insertSession(t, "account", prompterID)
+	requestA := h.insertMessage(t, sessionA, "account", prompterID, "text", "first prompt")
+	requestB := h.insertMessage(t, sessionB, "account", prompterID, "text", "second prompt")
+	now := time.Now()
+
+	h.execSQL(t, `UPDATE sessions SET title = $2, dispatch_snippet = $3 WHERE id = $1`, sessionA, "session a", "prompter: first prompt")
+	h.execSQL(t, `UPDATE sessions SET title = $2, dispatch_snippet = $3 WHERE id = $1`, sessionB, "session b", "prompter: second prompt")
+	jobA := h.insertJob(t, jobSeed{
+		sessionID:            sessionA,
+		requestMessageID:     requestA,
+		ownerType:            "account",
+		ownerID:              prompterID,
+		status:               "routing",
+		routingEndsAt:        now.Add(10 * time.Minute),
+		routingCycleCount:    2,
+		lastRoutingEnteredAt: ptrTime(now.Add(-2 * time.Minute)),
+	})
+	jobB := h.insertJob(t, jobSeed{
+		sessionID:            sessionB,
+		requestMessageID:     requestB,
+		ownerType:            "account",
+		ownerID:              prompterID,
+		status:               "routing",
+		routingEndsAt:        now.Add(10 * time.Minute),
+		lastRoutingEnteredAt: ptrTime(now.Add(-1 * time.Minute)),
+	})
+	_ = h.insertMessage(t, sessionA, "account", responderID, "reply", "reply")
+	h.execSQL(t, `INSERT INTO messages(id, session_id, owner_type, owner_id, type, role, content) VALUES ($1,$2,'account',$3,'feedback','responder',$4)`,
+		domain.NewID("msg"), sessionA, responderID, `a responder cancelled the assigned job due to "not a good fit"`)
+
+	affected, err := h.svc.ProcessDispatchJobSnapshots(context.Background())
+	if err != nil {
+		t.Fatalf("ProcessDispatchJobSnapshots: %v", err)
+	}
+	if affected != 2 {
+		t.Fatalf("affected = %d, want 2", affected)
+	}
+
+	type row struct {
+		Rank         int
+		JobID        string
+		SessionID    string
+		Title        string
+		Snippet      string
+		CancelReason string
+	}
+	rows, err := h.appPool.Query(context.Background(), `
+SELECT rank, job_id, session_id, session_title, session_snippet, last_responder_cancel_reason
+FROM dispatch_job_snapshots
+ORDER BY rank ASC`)
+	if err != nil {
+		t.Fatalf("query snapshots: %v", err)
+	}
+	defer rows.Close()
+
+	got := []row{}
+	for rows.Next() {
+		var item row
+		if err := rows.Scan(&item.Rank, &item.JobID, &item.SessionID, &item.Title, &item.Snippet, &item.CancelReason); err != nil {
+			t.Fatalf("scan snapshot row: %v", err)
+		}
+		got = append(got, item)
+	}
+	if len(got) != 2 {
+		t.Fatalf("snapshot row count = %d, want 2", len(got))
+	}
+	if got[0].JobID != jobA {
+		t.Fatalf("rank 1 job_id = %q, want %q", got[0].JobID, jobA)
+	}
+	if got[0].SessionID != sessionA || got[0].Title != "session a" || got[0].Snippet != "prompter: first prompt" {
+		t.Fatalf("rank 1 snapshot row = %+v", got[0])
+	}
+	if got[0].CancelReason != "not a good fit" {
+		t.Fatalf("rank 1 cancel reason = %q, want %q", got[0].CancelReason, "not a good fit")
+	}
+	if got[1].JobID != jobB {
+		t.Fatalf("rank 2 job_id = %q, want %q", got[1].JobID, jobB)
+	}
+}
+
+func TestServiceProcessAvailableResponderSnapshots(t *testing.T) {
+	t.Parallel()
+
+	h := newServiceHarness(t, func(cfg *config.Config) {
+		cfg.PollAssignmentWait = 30 * time.Second
+		cfg.ResponderActiveWindow = 12 * time.Second
+	})
+	prompterID := h.insertAccount(t, "tom")
+	pollResponderID := h.insertAccount(t, "poll")
+	hookResponderID := h.insertAccount(t, "hook")
+	busyResponderID := h.insertAccount(t, "busy")
+	claimedResponderID := h.insertAccount(t, "claimed")
+	now := time.Now()
+
+	h.execSQL(t, `UPDATE accounts SET responder_description = 'poll helper' WHERE id = $1`, pollResponderID)
+	h.execSQL(t, `UPDATE accounts SET responder_description = 'hook helper' WHERE id = $1`, hookResponderID)
+	h.execSQL(t, `INSERT INTO responder_availability(id, owner_type, owner_id, last_seen_at, poll_started_at) VALUES ($1,'account',$2,$3,$4)`,
+		domain.NewID("av"), pollResponderID, now, now)
+	h.execSQL(t, `INSERT INTO responder_availability(id, owner_type, owner_id, last_seen_at, poll_started_at) VALUES ($1,'account',$2,$3,$4)`,
+		domain.NewID("av"), busyResponderID, now, now)
+	h.execSQL(t, `INSERT INTO responder_availability(id, owner_type, owner_id, last_seen_at, poll_started_at) VALUES ($1,'account',$2,$3,$4)`,
+		domain.NewID("av"), claimedResponderID, now, now)
+	h.execSQL(t, `
+INSERT INTO account_hooks(
+  id, account_id, url, auth_token, enabled, status, notify_assignment_received, notify_reply_received, verified_at
+) VALUES (
+  $1, $2, 'https://hook.example/hooks/agent', 'secret', TRUE, 'active', TRUE, FALSE, now()
+)`, domain.NewID("ah"), hookResponderID)
+
+	busySessionID := h.insertSession(t, "account", prompterID)
+	busyRequestID := h.insertMessage(t, busySessionID, "account", prompterID, "text", "busy")
+	busyJobID := h.insertJob(t, jobSeed{
+		sessionID:        busySessionID,
+		requestMessageID: busyRequestID,
+		ownerType:        "account",
+		ownerID:          prompterID,
+		status:           "assigned",
+		routingEndsAt:    now.Add(10 * time.Minute),
+	})
+	h.insertAssignment(t, busyJobID, prompterID, busyResponderID, now.Add(10*time.Minute), "active")
+
+	claimedSessionID := h.insertSession(t, "account", prompterID)
+	claimedRequestID := h.insertMessage(t, claimedSessionID, "account", prompterID, "text", "claimed")
+	h.insertJob(t, jobSeed{
+		sessionID:        claimedSessionID,
+		requestMessageID: claimedRequestID,
+		ownerType:        "account",
+		ownerID:          prompterID,
+		status:           "system_pool",
+		routingEndsAt:    now.Add(10 * time.Minute),
+		claimOwnerType:   ptrString("account"),
+		claimOwnerID:     ptrString(claimedResponderID),
+		claimExpiresAt:   ptrTime(now.Add(10 * time.Minute)),
+	})
+
+	affected, err := h.svc.ProcessAvailableResponderSnapshots(context.Background())
+	if err != nil {
+		t.Fatalf("ProcessAvailableResponderSnapshots: %v", err)
+	}
+	if affected != 2 {
+		t.Fatalf("affected = %d, want 2", affected)
+	}
+
+	rows, err := h.appPool.Query(context.Background(), `
+SELECT owner_id, availability_mode, display_name, responder_description
+FROM available_responder_snapshots
+ORDER BY rank ASC`)
+	if err != nil {
+		t.Fatalf("query responder snapshots: %v", err)
+	}
+	defer rows.Close()
+
+	type row struct {
+		OwnerID     string
+		Mode        string
+		DisplayName string
+		Description string
+	}
+	got := []row{}
+	for rows.Next() {
+		var item row
+		if err := rows.Scan(&item.OwnerID, &item.Mode, &item.DisplayName, &item.Description); err != nil {
+			t.Fatalf("scan responder snapshot row: %v", err)
+		}
+		got = append(got, item)
+	}
+	if len(got) != 2 {
+		t.Fatalf("snapshot row count = %d, want 2", len(got))
+	}
+	if got[0].OwnerID != pollResponderID || got[0].Mode != "poll" || got[0].Description != "poll helper" {
+		t.Fatalf("first responder snapshot row = %+v", got[0])
+	}
+	if got[1].OwnerID != hookResponderID || got[1].Mode != "hook" || got[1].Description != "hook helper" {
+		t.Fatalf("second responder snapshot row = %+v", got[1])
+	}
+}
+
 func TestServiceProcessAssignmentTimeouts(t *testing.T) {
 	t.Parallel()
 
