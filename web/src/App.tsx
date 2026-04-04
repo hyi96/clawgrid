@@ -194,6 +194,7 @@ const LOCAL_DEV_BROWSER_ID_KEY = "clawgrid_local_dev_browser_v1";
 const RESPOND_STATE_KEY_PREFIX = "clawgrid_respond_active_v1";
 const DISPATCH_JOB_SLOTS = 4;
 const DISPATCH_RESPONDER_SLOTS = 5;
+const DISPATCH_ASSIGNMENT_SUPPRESS_MS = 12000;
 const REPO_URL = "https://github.com/hyi96/clawgrid";
 const RESPONDER_CANCEL_REASON_LIMIT = 40;
 const ACCOUNT_LEDGER_PAGE_SIZE = 20;
@@ -387,6 +388,19 @@ function expireDispatchSlots<T>(
     return item;
   });
   return { next, changed };
+}
+
+function pruneExpiredSuppressions(current: Record<string, number>, now = Date.now()): Record<string, number> {
+  let changed = false;
+  const next: Record<string, number> = {};
+  for (const [key, expiresAt] of Object.entries(current)) {
+    if (expiresAt > now) {
+      next[key] = expiresAt;
+    } else {
+      changed = true;
+    }
+  }
+  return changed ? next : current;
 }
 
 function formatCredits(v: number): string {
@@ -883,6 +897,8 @@ function AskPage({ auth }: { auth: AuthState | null }) {
 function DispatchPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequireAuth: () => void }) {
   const [jobs, setJobs] = useState<Array<RoutingJob | null>>([]);
   const [responders, setResponders] = useState<Array<AvailableResponder | null>>([]);
+  const [suppressedJobIDs, setSuppressedJobIDs] = useState<Record<string, number>>({});
+  const [suppressedResponderIDs, setSuppressedResponderIDs] = useState<Record<string, number>>({});
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [draggingResponder, setDraggingResponder] = useState<AvailableResponder | null>(null);
@@ -910,13 +926,22 @@ function DispatchPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequi
         api<{ items: RoutingJob[] }>("/routing/jobs", auth),
         api<{ items: AvailableResponder[] }>("/responders/available", auth),
       ]);
+      const now = Date.now();
+      const liveSuppressedJobIDs = pruneExpiredSuppressions(suppressedJobIDs, now);
+      const liveSuppressedResponderIDs = pruneExpiredSuppressions(suppressedResponderIDs, now);
+      if (liveSuppressedJobIDs !== suppressedJobIDs) setSuppressedJobIDs(liveSuppressedJobIDs);
+      if (liveSuppressedResponderIDs !== suppressedResponderIDs) setSuppressedResponderIDs(liveSuppressedResponderIDs);
+      const visibleJobs = jobData.items.filter((job) => !liveSuppressedJobIDs[job.id]);
+      const visibleResponders = responderData.items.filter(
+        (responder) => !liveSuppressedResponderIDs[`${responder.owner_type}:${responder.owner_id}`],
+      );
       setJobs((current) =>
-        reconcileDispatchSlots(current, jobData.items, (job) => job.id, isRoutingJobActive, DISPATCH_JOB_SLOTS),
+        reconcileDispatchSlots(current, visibleJobs, (job) => job.id, isRoutingJobActive, DISPATCH_JOB_SLOTS),
       );
       setResponders((current) =>
         reconcileDispatchSlots(
           current,
-          responderData.items,
+          visibleResponders,
           (responder) => `${responder.owner_type}:${responder.owner_id}`,
           isResponderAvailableNow,
           DISPATCH_RESPONDER_SLOTS,
@@ -925,7 +950,7 @@ function DispatchPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequi
     } catch (e) {
       setError((e as Error).message);
     }
-  }, [auth]);
+  }, [auth, suppressedJobIDs, suppressedResponderIDs]);
 
   useEffect(() => {
     void load();
@@ -939,6 +964,11 @@ function DispatchPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequi
     const id = window.setInterval(() => setNowTick(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    setSuppressedJobIDs((current) => pruneExpiredSuppressions(current, nowTick));
+    setSuppressedResponderIDs((current) => pruneExpiredSuppressions(current, nowTick));
+  }, [nowTick]);
 
   useEffect(() => {
     let jobsExpired = false;
@@ -1010,6 +1040,12 @@ function DispatchPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequi
           responder_id: responder.owner_id,
         }),
       });
+      const suppressUntil = Date.now() + DISPATCH_ASSIGNMENT_SUPPRESS_MS;
+      setSuppressedJobIDs((current) => ({ ...current, [jobID]: suppressUntil }));
+      setSuppressedResponderIDs((current) => ({
+        ...current,
+        [`${responder.owner_type}:${responder.owner_id}`]: suppressUntil,
+      }));
       setJobs((current) => clearDispatchSlotByKey(current, jobID, (job) => job.id));
       setResponders((current) =>
         clearDispatchSlotByKey(
