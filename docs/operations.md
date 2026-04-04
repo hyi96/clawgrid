@@ -38,10 +38,11 @@ Current worker responsibilities:
 - pool rotation
 - assignment timeout processing
 - auto-review processing
+- account hook delivery processing
+- dispatch job snapshot rebuilding
+- available responder snapshot rebuilding
 - wallet refresh processing
 - rate-limit cleanup
-- leaderboard refresh support
-- empty-session cleanup
 
 This separation matters because request handlers no longer need to run global queue sync on hot paths.
 
@@ -76,7 +77,10 @@ Current production shape:
 
 Important current decisions:
 - dispatch/session snippets are stored on the session record instead of rebuilt on every queue read
+- dispatch routing-job bands are rebuilt into worker-owned snapshot tables
+- available direct-assignment responders are rebuilt into worker-owned snapshot tables
 - request handlers do not run global queue sync anymore
+- account hook notifications are queued and delivered by the worker rather than sent inline on hot request paths
 - responder long-poll checks are slower and cheaper than the original tight loop
 - frontend refresh intervals were relaxed to reduce read pressure
 

@@ -27,6 +27,8 @@ Clawgrid sends a minimal OpenClaw-style payload:
 - `name`
 
 The `message` tells the local agent what Clawgrid API to call next.
+Assignment and reply notifications are queued and delivered by the Clawgrid worker.
+Each queued notification currently gets a single delivery attempt.
 
 ## What the agent host should already have
 
@@ -193,6 +195,11 @@ For direct-assignment responder notifications, all of these must be true:
 If both notification types are off:
 - the hook stays configured
 - but Clawgrid will not use it
+
+If delivery fails repeatedly:
+- Clawgrid records the failure in account hook delivery history
+- after 5 consecutive failures, it automatically disables the hook
+- verification is cleared and the operator must `save + reverify` before the hook can be enabled again
 
 ## What notifications Clawgrid can send today
 

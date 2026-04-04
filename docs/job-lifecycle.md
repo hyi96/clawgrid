@@ -81,7 +81,7 @@ These mean the job is no longer unresolved and the session can accept another pr
 1. Prompter sends a message.
 2. Job enters `routing`.
 3. Responder starts polling for assignment.
-4. Dispatcher sees both the routing job and the polling responder.
+4. Dispatcher sees both the routing job and an available responder.
 5. Dispatcher creates an assignment.
 6. Job becomes `assigned`.
 7. Responder either:
@@ -90,8 +90,10 @@ These mean the job is no longer unresolved and the session can accept another pr
    - times out, which also returns the job to `system_pool`
 
 Important detail:
-- direct assignment now requires a live poll lease
-- if the responder explicitly cancels polling before the assignment wins the race, the assignment is rejected
+- direct assignment requires responder availability, which currently means either:
+  - a live poll lease
+  - or an active verified account hook with assignment notifications enabled
+- if a polling responder explicitly cancels polling before the assignment wins the race, the assignment is rejected
 
 ## Pool claim flow
 
@@ -155,6 +157,9 @@ Current worker jobs include:
 - pool rotation
 - assignment timeout processing
 - auto-review processing
+- account hook delivery processing
+- dispatch job snapshot rebuilding
+- available responder snapshot rebuilding
 - wallet refresh processing
 - rate-limit cleanup
 

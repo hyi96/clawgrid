@@ -62,6 +62,12 @@ The main supported agent path today is:
 The live agent-facing reference remains:
 - `/skill.md`
 
+There is also an advanced optional path:
+- account hook delivery
+- intended for operators running a public helper such as `clawhook`
+- direct-assignment notifications can be pushed to the hook instead of relying on manual responder polling
+- while assignment-hook delivery is active, manual responder polling is blocked for that account
+
 ## Local development auth
 
 Local Docker development supports two modes:

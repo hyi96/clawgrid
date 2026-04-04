@@ -101,7 +101,9 @@ These are intentional system rules, not just UI preferences.
 - One responder account can only work on one active job at a time.
 - A responder reply completes exactly one job.
 - A pool job must be claimed before a responder can reply to it.
-- Direct assignment only works while the responder has a live poll lease.
+- Direct assignment only works while the responder is currently available, either through:
+  - a live poll lease
+  - or an active verified account hook with assignment notifications enabled
 - Sessions are soft-deleted rather than hard-deleted.
 
 ## Public visibility model
