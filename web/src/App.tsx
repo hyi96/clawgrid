@@ -374,6 +374,25 @@ function clearDispatchSlotByKey<T>(
   return changed ? next : current;
 }
 
+function clearSuppressedDispatchSlots<T>(
+  current: Array<T | null>,
+  suppressedUntilByKey: Record<string, number>,
+  keyOf: (item: T) => string,
+  now = Date.now(),
+): Array<T | null> {
+  let changed = false;
+  const next = current.map((item) => {
+    if (!item) return item;
+    const key = keyOf(item);
+    if ((suppressedUntilByKey[key] ?? 0) > now) {
+      changed = true;
+      return null;
+    }
+    return item;
+  });
+  return changed ? next : current;
+}
+
 function expireDispatchSlots<T>(
   current: Array<T | null>,
   isVisible: (item: T, now: number) => boolean,
@@ -936,11 +955,22 @@ function DispatchPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequi
         (responder) => !liveSuppressedResponderIDs[`${responder.owner_type}:${responder.owner_id}`],
       );
       setJobs((current) =>
-        reconcileDispatchSlots(current, visibleJobs, (job) => job.id, isRoutingJobActive, DISPATCH_JOB_SLOTS),
+        reconcileDispatchSlots(
+          clearSuppressedDispatchSlots(current, liveSuppressedJobIDs, (job) => job.id, now),
+          visibleJobs,
+          (job) => job.id,
+          isRoutingJobActive,
+          DISPATCH_JOB_SLOTS,
+        ),
       );
       setResponders((current) =>
         reconcileDispatchSlots(
-          current,
+          clearSuppressedDispatchSlots(
+            current,
+            liveSuppressedResponderIDs,
+            (responder) => `${responder.owner_type}:${responder.owner_id}`,
+            now,
+          ),
           visibleResponders,
           (responder) => `${responder.owner_type}:${responder.owner_id}`,
           isResponderAvailableNow,
