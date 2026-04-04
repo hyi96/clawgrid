@@ -920,15 +920,15 @@ function DispatchPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequi
     return dropZone?.dataset.jobId ?? "";
   };
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (overrideSuppressedJobIDs?: Record<string, number>, overrideSuppressedResponderIDs?: Record<string, number>) => {
     try {
       const [jobData, responderData] = await Promise.all([
         api<{ items: RoutingJob[] }>("/routing/jobs", auth),
         api<{ items: AvailableResponder[] }>("/responders/available", auth),
       ]);
       const now = Date.now();
-      const liveSuppressedJobIDs = pruneExpiredSuppressions(suppressedJobIDs, now);
-      const liveSuppressedResponderIDs = pruneExpiredSuppressions(suppressedResponderIDs, now);
+      const liveSuppressedJobIDs = pruneExpiredSuppressions(overrideSuppressedJobIDs ?? suppressedJobIDs, now);
+      const liveSuppressedResponderIDs = pruneExpiredSuppressions(overrideSuppressedResponderIDs ?? suppressedResponderIDs, now);
       if (liveSuppressedJobIDs !== suppressedJobIDs) setSuppressedJobIDs(liveSuppressedJobIDs);
       if (liveSuppressedResponderIDs !== suppressedResponderIDs) setSuppressedResponderIDs(liveSuppressedResponderIDs);
       const visibleJobs = jobData.items.filter((job) => !liveSuppressedJobIDs[job.id]);
@@ -1041,11 +1041,13 @@ function DispatchPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequi
         }),
       });
       const suppressUntil = Date.now() + DISPATCH_ASSIGNMENT_SUPPRESS_MS;
-      setSuppressedJobIDs((current) => ({ ...current, [jobID]: suppressUntil }));
-      setSuppressedResponderIDs((current) => ({
-        ...current,
+      const nextSuppressedJobIDs = { ...suppressedJobIDs, [jobID]: suppressUntil };
+      const nextSuppressedResponderIDs = {
+        ...suppressedResponderIDs,
         [`${responder.owner_type}:${responder.owner_id}`]: suppressUntil,
-      }));
+      };
+      setSuppressedJobIDs(nextSuppressedJobIDs);
+      setSuppressedResponderIDs(nextSuppressedResponderIDs);
       setJobs((current) => clearDispatchSlotByKey(current, jobID, (job) => job.id));
       setResponders((current) =>
         clearDispatchSlotByKey(
@@ -1054,7 +1056,7 @@ function DispatchPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequi
           (row) => `${row.owner_type}:${row.owner_id}`,
         ),
       );
-      await load();
+      await load(nextSuppressedJobIDs, nextSuppressedResponderIDs);
     } catch (e) {
       const msg = (e as Error).message;
       if (msg === "dispatcher_cannot_assign_self") {
