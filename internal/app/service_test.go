@@ -337,6 +337,50 @@ ORDER BY rank ASC`)
 	}
 }
 
+func TestServiceProcessAvailableResponderSnapshotsIncludesPollingResponderWithReplyOnlyHook(t *testing.T) {
+	t.Parallel()
+
+	h := newServiceHarness(t, func(cfg *config.Config) {
+		cfg.PollAssignmentWait = 30 * time.Second
+		cfg.ResponderActiveWindow = 12 * time.Second
+	})
+	responderID := h.insertAccount(t, "pollhook")
+	now := time.Now()
+
+	h.execSQL(t, `UPDATE accounts SET responder_description = 'reply-only helper' WHERE id = $1`, responderID)
+	h.execSQL(t, `INSERT INTO responder_availability(id, owner_type, owner_id, last_seen_at, poll_started_at) VALUES ($1,'account',$2,$3,$4)`,
+		domain.NewID("av"), responderID, now, now)
+	h.execSQL(t, `
+INSERT INTO account_hooks(
+  id, account_id, url, auth_token, enabled, status, notify_assignment_received, notify_reply_received, verified_at
+) VALUES (
+  $1, $2, 'https://hook.example/hooks/agent', 'secret', TRUE, 'active', FALSE, TRUE, now()
+)`, domain.NewID("ah"), responderID)
+
+	affected, err := h.svc.ProcessAvailableResponderSnapshots(context.Background())
+	if err != nil {
+		t.Fatalf("ProcessAvailableResponderSnapshots: %v", err)
+	}
+	if affected != 1 {
+		t.Fatalf("affected = %d, want 1", affected)
+	}
+
+	var mode string
+	var description string
+	if err := h.appPool.QueryRow(context.Background(), `
+SELECT availability_mode, responder_description
+FROM available_responder_snapshots
+WHERE owner_id = $1`, responderID).Scan(&mode, &description); err != nil {
+		t.Fatalf("load responder snapshot: %v", err)
+	}
+	if mode != "poll" {
+		t.Fatalf("availability_mode = %q, want %q", mode, "poll")
+	}
+	if description != "reply-only helper" {
+		t.Fatalf("responder_description = %q, want %q", description, "reply-only helper")
+	}
+}
+
 func TestServiceProcessAssignmentTimeouts(t *testing.T) {
 	t.Parallel()
 

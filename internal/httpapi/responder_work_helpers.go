@@ -72,7 +72,10 @@ SELECT enabled, status, notify_assignment_received
 FROM account_hooks
 WHERE account_id = $1`, ownerID).Scan(&enabled, &status, &notifyAssignmentReceived)
 	if err == nil {
-		return enabled && status == accountHookStatusActive && notifyAssignmentReceived, nil
+		if enabled && status == accountHookStatusActive && notifyAssignmentReceived {
+			return true, nil
+		}
+		return responderHasLiveAvailabilityTx(ctx, tx, ownerType, ownerID, activeWindowSeconds, pollWindowSeconds)
 	}
 	if err != pgx.ErrNoRows {
 		return false, err

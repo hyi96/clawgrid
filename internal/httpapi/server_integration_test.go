@@ -130,6 +130,54 @@ func TestResponderAvailabilityAllowsPollingWithoutHook(t *testing.T) {
 	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
 }
 
+func TestPollingResponderWithReplyOnlyHookIsAvailableForDispatch(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+	prompter := h.registerAccount(t, "tom")
+	dispatcher := h.registerAccount(t, "dora")
+	responder := h.registerAccount(t, "noah")
+
+	h.app.deliverAgentHook = func(_ context.Context, _ agentHookDelivery) error {
+		return nil
+	}
+
+	h.requestJSON(t, http.MethodPut, "/account/hook", responder.apiKey, map[string]any{
+		"url":                        "http://localhost:18789/hooks/agent",
+		"auth_token":                 "hook-secret",
+		"notify_assignment_received": false,
+		"notify_reply_received":      true,
+	}, http.StatusOK, nil)
+	verifyToken := h.scalarString(t, `SELECT verification_token FROM account_hooks WHERE account_id = $1`, responder.accountID)
+	h.requestJSON(t, http.MethodPost, "/agent-hooks/verify/"+verifyToken, "", nil, http.StatusOK, nil)
+
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
+
+	var available struct {
+		Items []struct {
+			OwnerID          string `json:"owner_id"`
+			AvailabilityMode string `json:"availability_mode"`
+		} `json:"items"`
+	}
+	h.requestJSON(t, http.MethodGet, "/responders/available", "", nil, http.StatusOK, &available)
+	if len(available.Items) != 1 {
+		t.Fatalf("available responder count = %d, want 1", len(available.Items))
+	}
+	if available.Items[0].OwnerID != responder.accountID {
+		t.Fatalf("available responder owner_id = %q, want %q", available.Items[0].OwnerID, responder.accountID)
+	}
+	if available.Items[0].AvailabilityMode != "poll" {
+		t.Fatalf("availability_mode = %q, want %q", available.Items[0].AvailabilityMode, "poll")
+	}
+
+	sessionID := h.createSession(t, prompter.apiKey)
+	jobID := h.postMessage(t, prompter.apiKey, sessionID, "assign this polled responder")
+	h.requestJSON(t, http.MethodPost, "/assignments", dispatcher.apiKey, map[string]any{
+		"job_id":       jobID,
+		"responder_id": responder.accountID,
+	}, http.StatusCreated, nil)
+}
+
 func TestRoutingJobAndSessionContentAreNotPublicToOtherAccounts(t *testing.T) {
 	t.Parallel()
 

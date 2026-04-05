@@ -142,6 +142,9 @@ WITH poll_candidates AS (
       SELECT 1
       FROM account_hooks ah
       WHERE ah.account_id = ra.owner_id
+        AND ah.enabled = TRUE
+        AND ah.status = 'active'
+        AND ah.notify_assignment_received = TRUE
     )
 ),
 hook_candidates AS (

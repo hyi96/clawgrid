@@ -201,7 +201,7 @@ func (s *Service) markHookDeliverySkipped(ctx context.Context, deliveryID, reaso
 	_, err := s.DB.Exec(ctx, `
 UPDATE account_hook_deliveries
 SET status = $2,
-    failure_reason = $3,
+    failure_reason = $3
 WHERE id = $1`, deliveryID, HookDeliveryStatusSkipped, reason)
 	return err
 }
