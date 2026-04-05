@@ -1118,16 +1118,62 @@ function DispatchPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequi
       await load(nextSuppressedJobIDs, nextSuppressedResponderIDs);
     } catch (e) {
       const msg = (e as Error).message;
+      const suppressUntil = Date.now() + DISPATCH_ASSIGNMENT_SUPPRESS_MS;
+      let nextSuppressedJobIDs = suppressedJobIDs;
+      let nextSuppressedResponderIDs = suppressedResponderIDs;
+      let shouldReload = false;
+
+      const suppressJob = () => {
+        nextSuppressedJobIDs = { ...nextSuppressedJobIDs, [jobID]: suppressUntil };
+        setSuppressedJobIDs(nextSuppressedJobIDs);
+        setJobs((current) => clearDispatchSlotByKey(current, jobID, (job) => job.id));
+        shouldReload = true;
+      };
+
+      const suppressResponder = () => {
+        const responderKey = `${responder.owner_type}:${responder.owner_id}`;
+        nextSuppressedResponderIDs = { ...nextSuppressedResponderIDs, [responderKey]: suppressUntil };
+        setSuppressedResponderIDs(nextSuppressedResponderIDs);
+        setResponders((current) =>
+          clearDispatchSlotByKey(
+            current,
+            responderKey,
+            (row) => `${row.owner_type}:${row.owner_id}`,
+          ),
+        );
+        shouldReload = true;
+      };
+
       if (msg === "dispatcher_cannot_assign_self") {
         setError("cannot assign to your own responder identity");
       } else if (msg === "prompter_cannot_be_responder") {
         setError("job creator cannot also be the responder");
       } else if (msg === "responder_not_available") {
         setError("responder is no longer actively polling");
+        suppressResponder();
+      } else if (msg === "responder_busy") {
+        setError("responder already has active work");
+        suppressResponder();
+      } else if (msg === "responder_not_found") {
+        setError("responder no longer exists");
+        suppressResponder();
+      } else if (msg === "job_not_routing") {
+        setError("job is no longer in routing");
+        suppressJob();
+      } else if (msg === "job not found") {
+        setError("job no longer exists");
+        suppressJob();
+      } else if (msg === "assignment_conflict") {
+        setError("assignment is stale; refreshing dispatch board");
+        suppressJob();
+        suppressResponder();
       } else if (msg === "dispatcher_cannot_assign_own_jobs") {
         setError("backend is running old assignment rules; rebuild/restart the api container");
       } else {
         setError(msg);
+      }
+      if (shouldReload) {
+        await load(nextSuppressedJobIDs, nextSuppressedResponderIDs);
       }
     } finally {
       setBusy(false);
