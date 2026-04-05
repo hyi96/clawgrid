@@ -195,6 +195,7 @@ const RESPOND_STATE_KEY_PREFIX = "clawgrid_respond_active_v1";
 const DISPATCH_JOB_SLOTS = 4;
 const DISPATCH_RESPONDER_SLOTS = 5;
 const DISPATCH_ASSIGNMENT_SUPPRESS_MS = 12000;
+const DISPATCH_HOOK_RESPONDER_STALE_MS = 15000;
 const REPO_URL = "https://github.com/hyi96/clawgrid";
 const RESPONDER_CANCEL_REASON_LIMIT = 40;
 const ACCOUNT_LEDGER_PAGE_SIZE = 20;
@@ -288,7 +289,11 @@ function routingEndsAtMs(job: RoutingJob): number {
 }
 
 function responderWaitEndsAtMs(responder: AvailableResponder): number {
-  if (responder.availability_mode === "hook") return Number.POSITIVE_INFINITY;
+  if (responder.availability_mode === "hook") {
+    const lastSeenAt = responder.last_seen_at ? new Date(responder.last_seen_at).getTime() : Number.NaN;
+    if (!Number.isFinite(lastSeenAt)) return 0;
+    return lastSeenAt + DISPATCH_HOOK_RESPONDER_STALE_MS;
+  }
   const startedAt = responder.poll_started_at ? new Date(responder.poll_started_at).getTime() : Number.NaN;
   if (!Number.isFinite(startedAt)) return 0;
   const waitMs = Math.max(1, (responder.assignment_wait_seconds ?? 30) * 1000);
@@ -370,6 +375,22 @@ function clearDispatchSlotByKey<T>(
       return null;
     }
     return item;
+  });
+  return changed ? next : current;
+}
+
+function clearMissingDispatchSlots<T>(
+  current: Array<T | null>,
+  incoming: T[],
+  keyOf: (item: T) => string,
+): Array<T | null> {
+  const incomingKeys = new Set(incoming.map((item) => keyOf(item)));
+  let changed = false;
+  const next = current.map((item) => {
+    if (!item) return item;
+    if (incomingKeys.has(keyOf(item))) return item;
+    changed = true;
+    return null;
   });
   return changed ? next : current;
 }
@@ -956,7 +977,11 @@ function DispatchPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequi
       );
       setJobs((current) =>
         reconcileDispatchSlots(
-          clearSuppressedDispatchSlots(current, liveSuppressedJobIDs, (job) => job.id, now),
+          clearMissingDispatchSlots(
+            clearSuppressedDispatchSlots(current, liveSuppressedJobIDs, (job) => job.id, now),
+            visibleJobs,
+            (job) => job.id,
+          ),
           visibleJobs,
           (job) => job.id,
           isRoutingJobActive,
@@ -965,11 +990,15 @@ function DispatchPage({ auth, onRequireAuth }: { auth: AuthState | null; onRequi
       );
       setResponders((current) =>
         reconcileDispatchSlots(
-          clearSuppressedDispatchSlots(
-            current,
-            liveSuppressedResponderIDs,
+          clearMissingDispatchSlots(
+            clearSuppressedDispatchSlots(
+              current,
+              liveSuppressedResponderIDs,
+              (responder) => `${responder.owner_type}:${responder.owner_id}`,
+              now,
+            ),
+            visibleResponders,
             (responder) => `${responder.owner_type}:${responder.owner_id}`,
-            now,
           ),
           visibleResponders,
           (responder) => `${responder.owner_type}:${responder.owner_id}`,

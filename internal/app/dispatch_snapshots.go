@@ -252,7 +252,7 @@ hook_candidates AS (
   SELECT 'hook'::text AS availability_mode,
          'account'::text AS owner_type,
          ah.account_id AS owner_id,
-         COALESCE(ah.last_success_at, ah.verified_at, ah.verification_requested_at, ah.updated_at, ah.created_at) AS last_seen_at,
+         now() AS last_seen_at,
          NULL::timestamptz AS poll_started_at,
          COALESCE(a.name, 'account') AS display_name,
          COALESCE(a.responder_description, '') AS responder_description
