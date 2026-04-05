@@ -121,6 +121,15 @@ func TestResponderAvailabilityRejectsPollingWhenHookDeliveryIsEnabled(t *testing
 	}
 }
 
+func TestResponderAvailabilityAllowsPollingWithoutHook(t *testing.T) {
+	t.Parallel()
+
+	h := newIntegrationHarness(t)
+	responder := h.registerAccount(t, "noah")
+
+	h.requestJSON(t, http.MethodPost, "/responders/availability", responder.apiKey, nil, http.StatusOK, nil)
+}
+
 func TestRoutingJobAndSessionContentAreNotPublicToOtherAccounts(t *testing.T) {
 	t.Parallel()
 

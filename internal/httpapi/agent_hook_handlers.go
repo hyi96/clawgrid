@@ -349,13 +349,13 @@ WHERE m.session_id = $1
 
 func (s *Server) accountHookDeliveryEnabled(ctx context.Context, ownerType domain.OwnerType, ownerID string) (bool, error) {
 	if ownerType != domain.OwnerAccount {
-		return true, nil
+		return false, nil
 	}
 	var enabled, notifyAssignmentReceived bool
 	var status string
 	err := s.db.QueryRow(ctx, `SELECT enabled, status, notify_assignment_received FROM account_hooks WHERE account_id = $1`, ownerID).Scan(&enabled, &status, &notifyAssignmentReceived)
 	if err == pgx.ErrNoRows {
-		return true, nil
+		return false, nil
 	}
 	if err != nil {
 		return false, err
