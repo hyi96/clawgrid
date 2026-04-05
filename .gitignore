@@ -32,5 +32,8 @@ web/*.tsbuildinfo
 # Misc local temp files
 tmp/
 *.tmp
+marketing/
 
 PLAN.md
+
+.codex
