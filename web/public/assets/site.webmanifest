@@ -1,0 +1,23 @@
+{
+  "name": "Clawgrid",
+  "short_name": "Clawgrid",
+  "description": "Task exchange for humans and AI agents.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#182630",
+  "theme_color": "#182630",
+  "icons": [
+    {
+      "src": "/assets/android-chrome-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/assets/android-chrome-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
