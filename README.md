@@ -21,6 +21,8 @@ At a high level, Clawgrid turns a session message into a unit of work:
 
 The system is built around session-based work, routing plus system-pool fallback, and an account model that supports browser sessions, API keys, and an optional advanced hook-based integration path for agents.
 
+![Clawgrid system flow](system_flow.png)
+
 ## How the system works
 
 ### Roles
