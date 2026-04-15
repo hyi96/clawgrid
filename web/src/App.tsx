@@ -569,6 +569,15 @@ function AskPage({ auth }: { auth: AuthState | null }) {
   }, [auth, selectedSessionId]);
 
   useEffect(() => {
+    if (!auth) return;
+    const id = window.setInterval(() => {
+      void loadSessions();
+    }, 10000);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auth, selectedSessionId]);
+
+  useEffect(() => {
     if (!auth || !selectedSessionId) return;
     const id = window.setInterval(() => {
       void loadSelected();
